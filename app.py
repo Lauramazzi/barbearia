@@ -493,6 +493,22 @@ def month_options_from(df: pd.DataFrame) -> list[str]:
     return [month_label(month) for month in months]
 
 
+def ensure_month_column(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "Mes" not in df.columns:
+        return df
+    result = df.copy()
+    result["Mes"] = result["Mes"].map(parse_month)
+    return result.dropna(subset=["Mes"])
+
+
+def month_text_for_editor(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "Mes" not in df.columns:
+        return df
+    result = df.copy()
+    result["Mes"] = result["Mes"].map(month_label)
+    return result
+
+
 def sort_month_label(label: str) -> pd.Timestamp:
     parsed = parse_month(label)
     if pd.isna(parsed):
@@ -549,6 +565,7 @@ with st.sidebar:
 receipts, receipt_summary = clean_receipts(load_uploaded_excel(receb_file))
 services = clean_ranking(load_uploaded_excel(serv_file), "Servico", "Realizado")
 products = clean_ranking(load_uploaded_excel(prod_file), "Produto", "Vendidos")
+receipts = ensure_month_column(receipts)
 
 if "accounts_editor" not in st.session_state:
     st.session_state.accounts_editor = accounts_base
@@ -569,6 +586,7 @@ st.session_state.accounts_editor = accounts
 st.session_state.expenses_editor = expenses
 st.session_state.goals_editor = goals
 history = history_base.copy()
+history = ensure_month_column(history)
 
 if receipts.empty:
     st.info("Suba o relatório `total recebimento periodo.xlsx` para calcular o mês atual. Você já pode editar as contas na aba Contas.")
@@ -585,7 +603,7 @@ if not month_options:
     month_options = [pd.Timestamp.today().strftime("%m/%Y")]
 selected_label = st.selectbox("Mês analisado", month_options, index=len(month_options) - 1)
 selected_month = parse_month(selected_label)
-selected_receipt = receipts[receipts["Mes"].eq(selected_month)].iloc[0] if not receipts.empty and receipts["Mes"].eq(selected_month).any() else None
+selected_receipt = receipts[receipts["Mes"].eq(selected_month)].iloc[0] if not receipts.empty and "Mes" in receipts.columns and receipts["Mes"].eq(selected_month).any() else None
 month_goals = goals_for_month(goals, selected_month)
 revenue_goal = month_goals["Meta Faturamento"]
 expense_goal = month_goals["Meta Despesa %"] / 100
@@ -627,7 +645,7 @@ with tab_expenses:
     st.subheader("Despesas lançadas mês a mês")
     st.caption("Cadastre cada despesa no mês correto. Para parcelas, preencha Parcela Atual e Total Parcelas.")
     edited_expenses = st.data_editor(
-        expenses,
+        month_text_for_editor(expenses),
         num_rows="dynamic",
         use_container_width=True,
         column_config={
@@ -662,7 +680,7 @@ with tab_goals:
     st.subheader("Metas financeiras e de produção")
     st.caption("Cadastre metas por mês. Se um mês não tiver meta própria, o painel usa a meta mais recente.")
     edited_goals = st.data_editor(
-        goals,
+        month_text_for_editor(goals),
         num_rows="dynamic",
         use_container_width=True,
         column_config={
@@ -777,7 +795,8 @@ with tab_history:
         st.info("Ainda não há histórico. Calcule um mês e baixe a base atualizada.")
     else:
         view = updated_history.copy()
-        view["Mes Label"] = view["Mes"].dt.strftime("%m/%Y")
+        view = ensure_month_column(view)
+        view["Mes Label"] = view["Mes"].map(month_label)
         st.dataframe(view.drop(columns=["Mes"]).rename(columns={"Mes Label": "Mes"}), use_container_width=True, hide_index=True)
         chart = view.set_index("Mes Label")[["Faturamento Liquido", "Total Barbearia", "Valor Guardado", "Caixa Apos Guardar"]]
         st.line_chart(chart)
