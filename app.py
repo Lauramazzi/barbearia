@@ -8,43 +8,96 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import streamlit as st
 
+
 NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
 }
 
 MONTHS_PT = {
-    "janeiro": 1, "jan": 1,
-    "fevereiro": 2, "fev": 2,
-    "marco": 3, "março": 3, "mar": 3,
-    "abril": 4, "abr": 4,
-    "maio": 5, "mai": 5,
-    "junho": 6, "jun": 6,
-    "julho": 7, "jul": 7,
-    "agosto": 8, "ago": 8,
-    "setembro": 9, "set": 9,
-    "outubro": 10, "out": 10,
-    "novembro": 11, "nov": 11,
-    "dezembro": 12, "dez": 12,
+    "janeiro": 1,
+    "jan": 1,
+    "fevereiro": 2,
+    "fev": 2,
+    "marco": 3,
+    "março": 3,
+    "mar": 3,
+    "abril": 4,
+    "abr": 4,
+    "maio": 5,
+    "mai": 5,
+    "junho": 6,
+    "jun": 6,
+    "julho": 7,
+    "jul": 7,
+    "agosto": 8,
+    "ago": 8,
+    "setembro": 9,
+    "set": 9,
+    "outubro": 10,
+    "out": 10,
+    "novembro": 11,
+    "nov": 11,
+    "dezembro": 12,
+    "dez": 12,
 }
 
 HISTORY_COLUMNS = [
-    "Mes", "Faturamento Liquido", "Fixas Barbearia", "Variaveis Barbearia",
-    "Investimentos/Pontuais", "Total Barbearia", "Despesas Pessoais",
-    "Valor Guardado", "Caixa Livre", "Caixa Apos Guardar", "% Despesas",
-    "Produtos Valor", "% Produtos", "Produtos Vendidos", "Servicos Realizados", "Status",
+    "Mes",
+    "Faturamento Liquido",
+    "Fixas Barbearia",
+    "Variaveis Barbearia",
+    "Investimentos/Pontuais",
+    "Total Barbearia",
+    "Despesas Pessoais",
+    "Valor Guardado",
+    "Caixa Livre",
+    "Caixa Apos Guardar",
+    "% Despesas",
+    "Produtos Valor",
+    "% Produtos",
+    "Produtos Vendidos",
+    "Servicos Realizados",
+    "Status",
 ]
+
 ACCOUNT_COLUMNS = [
-    "Centro", "Tipo", "Descricao", "Valor Mensal", "Vencimento", "Forma Pagamento",
-    "Mes Inicial", "Mes Final", "Status", "Observacoes",
+    "Centro",
+    "Tipo",
+    "Descricao",
+    "Valor Mensal",
+    "Vencimento",
+    "Forma Pagamento",
+    "Mes Inicial",
+    "Mes Final",
+    "Status",
+    "Observacoes",
 ]
+
 EXPENSE_COLUMNS = [
-    "Mes", "Centro", "Categoria", "Tipo", "Descricao", "Valor", "Vencimento",
-    "Forma Pagamento", "Parcela Atual", "Total Parcelas", "Status", "Observacoes",
+    "Mes",
+    "Centro",
+    "Categoria",
+    "Tipo",
+    "Descricao",
+    "Valor",
+    "Vencimento",
+    "Forma Pagamento",
+    "Parcela Atual",
+    "Total Parcelas",
+    "Status",
+    "Observacoes",
 ]
+
 GOAL_COLUMNS = [
-    "Mes", "Meta Faturamento", "Meta Despesa %", "Meta Produtos %", "Meta Caixa Final",
-    "Meta Valor Guardado", "Meta Servicos", "Meta Produtos Vendidos",
+    "Mes",
+    "Meta Faturamento",
+    "Meta Despesa %",
+    "Meta Produtos %",
+    "Meta Caixa Final",
+    "Meta Valor Guardado",
+    "Meta Servicos",
+    "Meta Produtos Vendidos",
 ]
 
 
@@ -176,8 +229,9 @@ def rows_to_dataframe(rows: list[list[object]]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     headers = [normalize_text(value) or f"Coluna {idx + 1}" for idx, value in enumerate(rows[0])]
+    data = rows[1:]
     width = len(headers)
-    normalized = [row + [None] * max(0, width - len(row)) for row in rows[1:]]
+    normalized = [row + [None] * max(0, width - len(row)) for row in data]
     return pd.DataFrame([row[:width] for row in normalized], columns=headers)
 
 
@@ -194,11 +248,13 @@ def load_uploaded_excel(uploaded_file) -> pd.DataFrame:
 def clean_receipts(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
     if df.empty:
         return pd.DataFrame(columns=["Mes", "Total Bruto", "Total Pago", "Total Liquido"]), {}
+
     working = df.copy()
     working.columns = [normalize_text(col) for col in working.columns]
     first_col = working.columns[0]
     summary: dict[str, float] = {}
     data_rows = []
+
     for _, row in working.iterrows():
         first = normalize_text(row.get(first_col))
         parsed_month = parse_month(first)
@@ -217,6 +273,7 @@ def clean_receipts(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
                 if ":" in text:
                     label, raw_value = text.split(":", 1)
                     summary[label.strip().title()] = parse_money(raw_value)
+
     receipts = pd.DataFrame(data_rows)
     if not receipts.empty:
         receipts = receipts.sort_values("Mes")
@@ -230,7 +287,12 @@ def clean_ranking(df: pd.DataFrame, name_col: str, qty_col: str) -> pd.DataFrame
     working.columns = [normalize_text(col) for col in working.columns]
     source_name = working.columns[0]
     source_qty = working.columns[1] if len(working.columns) > 1 else working.columns[0]
-    result = pd.DataFrame({name_col: working[source_name].map(normalize_text), qty_col: working[source_qty].map(parse_number)})
+    result = pd.DataFrame(
+        {
+            name_col: working[source_name].map(normalize_text),
+            qty_col: working[source_qty].map(parse_number),
+        }
+    )
     result = result[result[name_col] != ""]
     return result.sort_values(qty_col, ascending=False)
 
@@ -260,16 +322,18 @@ def default_accounts() -> pd.DataFrame:
 def default_goals() -> pd.DataFrame:
     current_month = pd.Timestamp.today().replace(day=1).strftime("%m/%Y")
     return pd.DataFrame(
-        [{
-            "Mes": current_month,
-            "Meta Faturamento": 9000.0,
-            "Meta Despesa %": 42.0,
-            "Meta Produtos %": 8.0,
-            "Meta Caixa Final": 3000.0,
-            "Meta Valor Guardado": 500.0,
-            "Meta Servicos": 500.0,
-            "Meta Produtos Vendidos": 40.0,
-        }],
+        [
+            {
+                "Mes": current_month,
+                "Meta Faturamento": 9000.0,
+                "Meta Despesa %": 42.0,
+                "Meta Produtos %": 8.0,
+                "Meta Caixa Final": 3000.0,
+                "Meta Valor Guardado": 500.0,
+                "Meta Servicos": 500.0,
+                "Meta Produtos Vendidos": 40.0,
+            }
+        ],
         columns=GOAL_COLUMNS,
     )
 
@@ -295,6 +359,37 @@ def default_expenses(accounts: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows, columns=EXPENSE_COLUMNS)
+
+
+def load_history_base(uploaded_file) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if not uploaded_file:
+        accounts = default_accounts()
+        return pd.DataFrame(columns=HISTORY_COLUMNS), accounts, default_expenses(accounts), default_goals()
+    uploaded_file.seek(0)
+    try:
+        history = pd.read_excel(uploaded_file, sheet_name="Historico")
+    except Exception:
+        history = pd.DataFrame(columns=HISTORY_COLUMNS)
+    uploaded_file.seek(0)
+    try:
+        accounts = pd.read_excel(uploaded_file, sheet_name="Contas")
+    except Exception:
+        accounts = default_accounts()
+    uploaded_file.seek(0)
+    try:
+        expenses = pd.read_excel(uploaded_file, sheet_name="Despesas")
+    except Exception:
+        expenses = default_expenses(accounts)
+    uploaded_file.seek(0)
+    try:
+        goals = pd.read_excel(uploaded_file, sheet_name="Metas")
+    except Exception:
+        goals = default_goals()
+    history = normalize_history(history)
+    accounts = normalize_accounts(accounts)
+    expenses = normalize_expenses(expenses)
+    goals = normalize_goals(goals)
+    return history, accounts, expenses, goals
 
 
 def normalize_history(df: pd.DataFrame) -> pd.DataFrame:
@@ -356,33 +451,6 @@ def normalize_goals(df: pd.DataFrame) -> pd.DataFrame:
     return result.dropna(subset=["Mes"]).sort_values("Mes")
 
 
-def load_history_base(uploaded_file) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    if not uploaded_file:
-        accounts = default_accounts()
-        return pd.DataFrame(columns=HISTORY_COLUMNS), accounts, default_expenses(accounts), default_goals()
-    uploaded_file.seek(0)
-    try:
-        history = pd.read_excel(uploaded_file, sheet_name="Historico")
-    except Exception:
-        history = pd.DataFrame(columns=HISTORY_COLUMNS)
-    uploaded_file.seek(0)
-    try:
-        accounts = pd.read_excel(uploaded_file, sheet_name="Contas")
-    except Exception:
-        accounts = default_accounts()
-    uploaded_file.seek(0)
-    try:
-        expenses = pd.read_excel(uploaded_file, sheet_name="Despesas")
-    except Exception:
-        expenses = default_expenses(accounts)
-    uploaded_file.seek(0)
-    try:
-        goals = pd.read_excel(uploaded_file, sheet_name="Metas")
-    except Exception:
-        goals = default_goals()
-    return normalize_history(history), normalize_accounts(accounts), normalize_expenses(expenses), normalize_goals(goals)
-
-
 def active_accounts_for_month(accounts: pd.DataFrame, month: pd.Timestamp) -> pd.DataFrame:
     if accounts.empty:
         return accounts
@@ -403,22 +471,33 @@ def expenses_for_month(expenses: pd.DataFrame, month: pd.Timestamp) -> pd.DataFr
 
 
 def goals_for_month(goals: pd.DataFrame, month: pd.Timestamp) -> dict[str, float]:
-    defaults = {
-        "Meta Faturamento": 9000.0,
-        "Meta Despesa %": 42.0,
-        "Meta Produtos %": 8.0,
-        "Meta Caixa Final": 3000.0,
-        "Meta Valor Guardado": 500.0,
-        "Meta Servicos": 500.0,
-        "Meta Produtos Vendidos": 40.0,
-    }
     if goals.empty:
-        return defaults
+        return {
+            "Meta Faturamento": 9000.0,
+            "Meta Despesa %": 42.0,
+            "Meta Produtos %": 8.0,
+            "Meta Caixa Final": 3000.0,
+            "Meta Valor Guardado": 500.0,
+            "Meta Servicos": 500.0,
+            "Meta Produtos Vendidos": 40.0,
+        }
     exact = goals[goals["Mes"].eq(month)]
     row = exact.iloc[0] if not exact.empty else goals.sort_values("Mes").iloc[-1]
-    result = defaults.copy()
-    result.update({col: float(row.get(col, defaults[col])) for col in defaults})
-    return result
+    return {col: float(row.get(col, 0.0)) for col in GOAL_COLUMNS if col != "Mes"}
+
+
+def month_options_from(df: pd.DataFrame) -> list[str]:
+    if df.empty or "Mes" not in df.columns:
+        return []
+    months = df["Mes"].map(parse_month).dropna()
+    return [month_label(month) for month in months]
+
+
+def sort_month_label(label: str) -> pd.Timestamp:
+    parsed = parse_month(label)
+    if pd.isna(parsed):
+        return pd.Timestamp.min
+    return parsed
 
 
 def status_label(revenue: float, expense_pct: float, cash_after_saving: float, revenue_goal: float, expense_goal: float, cash_goal: float) -> str:
@@ -429,7 +508,15 @@ def status_label(revenue: float, expense_pct: float, cash_after_saving: float, r
     return "OK"
 
 
-def build_export(history: pd.DataFrame, accounts: pd.DataFrame, expenses: pd.DataFrame, goals: pd.DataFrame, receipts: pd.DataFrame, services: pd.DataFrame, products: pd.DataFrame) -> bytes:
+def build_export(
+    history: pd.DataFrame,
+    accounts: pd.DataFrame,
+    expenses: pd.DataFrame,
+    goals: pd.DataFrame,
+    receipts: pd.DataFrame,
+    services: pd.DataFrame,
+    products: pd.DataFrame,
+) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         history.to_excel(writer, index=False, sheet_name="Historico")
@@ -475,22 +562,38 @@ if base_file and st.session_state.get("base_loaded_name") != base_file.name:
     st.session_state.goals_editor = goals_base
     st.session_state.base_loaded_name = base_file.name
 
-accounts = st.session_state.accounts_editor
-expenses = st.session_state.expenses_editor
-goals = st.session_state.goals_editor
+accounts = normalize_accounts(st.session_state.accounts_editor)
+expenses = normalize_expenses(st.session_state.expenses_editor)
+goals = normalize_goals(st.session_state.goals_editor)
+st.session_state.accounts_editor = accounts
+st.session_state.expenses_editor = expenses
+st.session_state.goals_editor = goals
 history = history_base.copy()
 
 if receipts.empty:
-    st.info("Suba o relatório `total recebimento periodo.xlsx` para calcular o mês atual. Você também pode lançar despesas e metas manualmente.")
+    st.info("Suba o relatório `total recebimento periodo.xlsx` para calcular o mês atual. Você já pode editar as contas na aba Contas.")
 
-history_months = history["Mes"].dt.strftime("%m/%Y").tolist() if not history.empty else []
-expense_months = expenses["Mes"].dt.strftime("%m/%Y").tolist() if not expenses.empty else []
-goal_months = goals["Mes"].dt.strftime("%m/%Y").tolist() if not goals.empty else []
-receipt_months = receipts["Mes"].dt.strftime("%m/%Y").tolist() if not receipts.empty else []
-month_options = sorted(set(history_months + expense_months + goal_months + receipt_months + [manual_month]), key=lambda label: parse_month(label))
+history_months = month_options_from(history)
+expense_months = month_options_from(expenses)
+goal_months = month_options_from(goals)
+receipt_months = month_options_from(receipts)
+month_options = sorted(
+    {label for label in history_months + expense_months + goal_months + receipt_months + [manual_month] if not pd.isna(parse_month(label))},
+    key=sort_month_label,
+)
+if not month_options:
+    month_options = [pd.Timestamp.today().strftime("%m/%Y")]
 selected_label = st.selectbox("Mês analisado", month_options, index=len(month_options) - 1)
 selected_month = parse_month(selected_label)
 selected_receipt = receipts[receipts["Mes"].eq(selected_month)].iloc[0] if not receipts.empty and receipts["Mes"].eq(selected_month).any() else None
+month_goals = goals_for_month(goals, selected_month)
+revenue_goal = month_goals["Meta Faturamento"]
+expense_goal = month_goals["Meta Despesa %"] / 100
+product_goal = month_goals["Meta Produtos %"] / 100
+cash_goal = month_goals["Meta Caixa Final"]
+saved_goal = month_goals["Meta Valor Guardado"]
+services_goal = month_goals["Meta Servicos"]
+products_sold_goal = month_goals["Meta Produtos Vendidos"]
 
 tab_current, tab_expenses, tab_accounts, tab_goals, tab_history, tab_rankings, tab_export = st.tabs(
     ["Gestão do mês", "Despesas", "Contas e parcelas", "Metas", "Histórico e evolução", "Rankings", "Exportar base"]
@@ -530,7 +633,11 @@ with tab_expenses:
         column_config={
             "Mes": st.column_config.TextColumn("Mes", help="Use mm/aaaa, por exemplo 01/2026"),
             "Centro": st.column_config.SelectboxColumn("Centro", options=["Barbearia", "Pessoal"], required=True),
-            "Categoria": st.column_config.SelectboxColumn("Categoria", options=["Recorrente", "Operacional", "Marketing", "Imposto", "Produto", "Investimento", "Pessoal", "Outro"], required=True),
+            "Categoria": st.column_config.SelectboxColumn(
+                "Categoria",
+                options=["Recorrente", "Operacional", "Marketing", "Imposto", "Produto", "Investimento", "Pessoal", "Outro"],
+                required=True,
+            ),
             "Tipo": st.column_config.SelectboxColumn("Tipo", options=["Fixo", "Variavel", "Parcela", "Pontual"], required=True),
             "Valor": st.column_config.NumberColumn("Valor", min_value=0.0, step=10.0, format="R$ %.2f"),
             "Forma Pagamento": st.column_config.SelectboxColumn("Forma Pagamento", options=["Pix", "Boleto", "Cartao", "Dinheiro", "Outro"]),
@@ -629,24 +736,26 @@ with tab_current:
         st.bar_chart(month_expenses.groupby(["Categoria"])["Valor"].sum().sort_values(ascending=False))
 
     current_row = pd.DataFrame(
-        [{
-            "Mes": selected_month,
-            "Faturamento Liquido": revenue_liquid,
-            "Fixas Barbearia": fixed_barber,
-            "Variaveis Barbearia": variable_barber,
-            "Investimentos/Pontuais": one_off_barber,
-            "Total Barbearia": barber_expenses,
-            "Despesas Pessoais": personal_expenses,
-            "Valor Guardado": saved_balance,
-            "Caixa Livre": cash_free,
-            "Caixa Apos Guardar": cash_after_saving,
-            "% Despesas": expense_pct,
-            "Produtos Valor": products_value,
-            "% Produtos": products_share,
-            "Produtos Vendidos": products_sold,
-            "Servicos Realizados": services_done,
-            "Status": status,
-        }]
+        [
+            {
+                "Mes": selected_month,
+                "Faturamento Liquido": revenue_liquid,
+                "Fixas Barbearia": fixed_barber,
+                "Variaveis Barbearia": variable_barber,
+                "Investimentos/Pontuais": one_off_barber,
+                "Total Barbearia": barber_expenses,
+                "Despesas Pessoais": personal_expenses,
+                "Valor Guardado": saved_balance,
+                "Caixa Livre": cash_free,
+                "Caixa Apos Guardar": cash_after_saving,
+                "% Despesas": expense_pct,
+                "Produtos Valor": products_value,
+                "% Produtos": products_share,
+                "Produtos Vendidos": products_sold,
+                "Servicos Realizados": services_done,
+                "Status": status,
+            }
+        ]
     )
 
     history_without_month = history[~history["Mes"].eq(selected_month)] if not history.empty else history
