@@ -8,6 +8,11 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import streamlit as st
 
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
+
 
 NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -245,6 +250,55 @@ def load_uploaded_excel(uploaded_file) -> pd.DataFrame:
         return rows_to_dataframe(read_xlsx_raw(uploaded_file))
 
 
+def uploaded_name(uploaded_file) -> str:
+    return normalize_text(getattr(uploaded_file, "name", ""))
+
+
+def read_pdf_text(uploaded_file) -> str:
+    if not uploaded_file or PdfReader is None:
+        return ""
+    try:
+        uploaded_file.seek(0)
+        reader = PdfReader(uploaded_file)
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception:
+        return ""
+
+
+def lines_from_text(text: str) -> list[str]:
+    return [normalize_text(line) for line in text.splitlines() if normalize_text(line)]
+
+
+def next_money_after(lines: list[str], label: str) -> float:
+    label_lower = label.lower()
+    for idx, line in enumerate(lines):
+        if label_lower in line.lower():
+            for candidate in lines[idx + 1 : idx + 5]:
+                if "R$" in candidate:
+                    return parse_money(candidate)
+    return 0.0
+
+
+def title_month_from_pdf(lines: list[str]) -> pd.Timestamp | pd.NaT:
+    for idx, line in enumerate(lines[:10]):
+        if "Relatório" in line and "·" in line:
+            after = line.split("·", 1)[1].strip()
+            year = lines[idx + 1] if idx + 1 < len(lines) and re.fullmatch(r"\d{4}", lines[idx + 1]) else ""
+            parsed = parse_month(f"{after} {year}".strip())
+            if pd.notna(parsed):
+                return parsed
+    return pd.NaT
+
+
+def base_month_from_pdf(lines: list[str]) -> pd.Timestamp | pd.NaT:
+    for idx, line in enumerate(lines[:15]):
+        if line.lower() == "base" and idx + 1 < len(lines):
+            parsed = parse_month(lines[idx + 1])
+            if pd.notna(parsed):
+                return parsed
+    return pd.NaT
+
+
 def clean_receipts(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
     if df.empty:
         return pd.DataFrame(columns=["Mes", "Total Bruto", "Total Pago", "Total Liquido"]), {}
@@ -287,7 +341,7 @@ def clean_managerial_financial(df: pd.DataFrame) -> pd.DataFrame:
 
     working = df.copy()
     working.columns = [normalize_text(col) for col in working.columns]
-    required = {"Data", "Valor Bruto"}
+    required = {"Receita", "Data", "Valor Bruto"}
     if not required.issubset(set(working.columns)):
         return pd.DataFrame(columns=columns)
 
@@ -362,6 +416,104 @@ def clean_managerial_expenses(df: pd.DataFrame) -> pd.DataFrame:
     return normalize_expenses(pd.DataFrame(rows, columns=EXPENSE_COLUMNS))
 
 
+def clean_commitment_pdf(text: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    lines = lines_from_text(text)
+    empty_expenses = pd.DataFrame(columns=EXPENSE_COLUMNS)
+    empty_receipts = pd.DataFrame(columns=["Mes", "Total Bruto", "Total Pago", "Total Liquido"])
+    empty_accounts = pd.DataFrame(columns=ACCOUNT_COLUMNS)
+    if not lines or not any("Comprometimento" in line for line in lines):
+        return empty_expenses, empty_receipts, empty_accounts
+
+    expense_month = title_month_from_pdf(lines)
+    base_month = base_month_from_pdf(lines)
+    if pd.isna(expense_month):
+        expense_month = base_month if pd.notna(base_month) else pd.Timestamp.today().replace(day=1)
+
+    revenue = next_money_after(lines, "FATURAMENTO")
+    receipt_rows = []
+    if revenue and pd.notna(base_month):
+        receipt_rows.append(
+            {
+                "Mes": base_month,
+                "Total Bruto": revenue,
+                "Total Pago": revenue,
+                "Total Liquido": revenue,
+            }
+        )
+
+    expense_rows = []
+    account_rows = []
+
+    def add_expense(description: str, value: float, category: str, kind: str, due: str = "", notes: str = "") -> None:
+        if not description or not value:
+            return
+        expense_rows.append(
+            {
+                "Mes": expense_month,
+                "Centro": "Barbearia",
+                "Categoria": category,
+                "Tipo": kind,
+                "Descricao": description,
+                "Valor": value,
+                "Vencimento": due,
+                "Forma Pagamento": "Outro",
+                "Parcela Atual": "",
+                "Total Parcelas": "",
+                "Status": "Previsto",
+                "Observacoes": notes or "Importado do PDF de comprometimento",
+            }
+        )
+        account_rows.append(
+            {
+                "Centro": "Barbearia",
+                "Tipo": kind,
+                "Descricao": description,
+                "Valor Mensal": value,
+                "Vencimento": due,
+                "Forma Pagamento": "Outro",
+                "Mes Inicial": month_label(expense_month),
+                "Mes Final": "",
+                "Status": "Ativo",
+                "Observacoes": notes,
+            }
+        )
+
+    def parse_section(start_label: str, end_label: str, category: str, kind: str) -> None:
+        try:
+            start = next(idx for idx, line in enumerate(lines) if start_label.lower() in line.lower())
+            end = next(idx for idx, line in enumerate(lines[start + 1 :], start + 1) if end_label.lower() in line.lower())
+        except StopIteration:
+            return
+        idx = start
+        while idx < end:
+            line = lines[idx]
+            invalid_description = (
+                line.lower().startswith(("total", "%", "valor", "descrição", "parc", "custo", "encerra", "venciment"))
+                or line in {"—", "Recorrente"}
+                or bool(re.fullmatch(r"\d+", line))
+                or "R$" in line
+            )
+            if idx + 1 < end and "R$" in lines[idx + 1] and not invalid_description:
+                description = line
+                value = parse_money(lines[idx + 1])
+                due = ""
+                for candidate in lines[idx + 2 : min(idx + 7, end)]:
+                    if candidate.startswith("Dia") or re.match(r"\d{2}/\d{2}/\d{4}", candidate):
+                        due = candidate
+                add_expense(description, value, category, kind, due)
+                idx += 2
+            else:
+                idx += 1
+
+    parse_section("2. Despesas Fixas", "TOTAL FIXAS", "Recorrente", "Fixo")
+    parse_section("3. Parcelas", "TOTAL PARCELAS", "Parcela", "Parcela")
+
+    expenses = normalize_expenses(pd.DataFrame(expense_rows, columns=EXPENSE_COLUMNS)) if expense_rows else empty_expenses
+    receipts = pd.DataFrame(receipt_rows, columns=["Mes", "Total Bruto", "Total Pago", "Total Liquido"]) if receipt_rows else empty_receipts
+    accounts = normalize_accounts(pd.DataFrame(account_rows, columns=ACCOUNT_COLUMNS)) if account_rows else empty_accounts
+    return expenses, ensure_month_column(receipts), accounts
+
+
 def combine_receipts(receipts: pd.DataFrame, managerial: pd.DataFrame) -> pd.DataFrame:
     receipts = ensure_month_column(receipts)
     managerial = ensure_month_column(managerial)
@@ -384,6 +536,97 @@ def combine_expenses(existing: pd.DataFrame, imported: pd.DataFrame) -> pd.DataF
     combined = pd.concat([existing, imported], ignore_index=True)
     dedupe_cols = ["Mes", "Centro", "Categoria", "Descricao", "Valor", "Vencimento"]
     return combined.drop_duplicates(subset=dedupe_cols, keep="last").sort_values(["Mes", "Centro", "Categoria"])
+
+
+def combine_accounts(existing: pd.DataFrame, imported: pd.DataFrame) -> pd.DataFrame:
+    existing = normalize_accounts(existing)
+    imported = normalize_accounts(imported) if not imported.empty else imported
+    if existing.empty:
+        return imported
+    if imported.empty:
+        return existing
+    combined = pd.concat([existing, imported], ignore_index=True)
+    return combined.drop_duplicates(subset=["Centro", "Tipo", "Descricao", "Valor Mensal"], keep="last")
+
+
+def load_base_from_reports(files: list) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
+    for uploaded_file in files:
+        name = uploaded_name(uploaded_file).lower()
+        if not name.endswith(".xlsx"):
+            continue
+        try:
+            uploaded_file.seek(0)
+            sheet_names = pd.ExcelFile(uploaded_file).sheet_names
+            if {"Historico", "Contas", "Despesas", "Metas"}.intersection(set(sheet_names)):
+                uploaded_file.seek(0)
+                history, accounts, expenses, goals = load_history_base(uploaded_file)
+                return history, accounts, expenses, goals, uploaded_name(uploaded_file)
+        except Exception:
+            continue
+    accounts = default_accounts()
+    return pd.DataFrame(columns=HISTORY_COLUMNS), accounts, default_expenses(accounts), default_goals(), ""
+
+
+def process_uploaded_reports(files: list) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]]:
+    receipts = pd.DataFrame(columns=["Mes", "Total Bruto", "Total Pago", "Total Liquido"])
+    expenses = pd.DataFrame(columns=EXPENSE_COLUMNS)
+    accounts = pd.DataFrame(columns=ACCOUNT_COLUMNS)
+    services = pd.DataFrame(columns=["Servico", "Realizado"])
+    products = pd.DataFrame(columns=["Produto", "Vendidos"])
+    notes: list[str] = []
+
+    for uploaded_file in files:
+        name = uploaded_name(uploaded_file)
+        lower = name.lower()
+        if lower.endswith(".pdf"):
+            text = read_pdf_text(uploaded_file)
+            pdf_expenses, pdf_receipts, pdf_accounts = clean_commitment_pdf(text)
+            if not pdf_expenses.empty or not pdf_receipts.empty:
+                expenses = combine_expenses(expenses, pdf_expenses)
+                receipts = combine_receipts(receipts, pdf_receipts)
+                accounts = combine_accounts(accounts, pdf_accounts)
+                notes.append(f"{name}: PDF de comprometimento lido")
+            else:
+                notes.append(f"{name}: PDF não reconhecido")
+            continue
+
+        if not lower.endswith(".xlsx"):
+            notes.append(f"{name}: formato ignorado")
+            continue
+
+        try:
+            df = load_uploaded_excel(uploaded_file)
+        except Exception:
+            notes.append(f"{name}: não consegui ler")
+            continue
+
+        receipt_df, _ = clean_receipts(df)
+        managerial_receipts = clean_managerial_financial(df)
+        managerial_expenses = clean_managerial_expenses(df)
+        service_df = clean_ranking(df, "Servico", "Realizado")
+        product_df = clean_ranking(df, "Produto", "Vendidos")
+        recognized = False
+
+        if not receipt_df.empty or not managerial_receipts.empty:
+            receipts = combine_receipts(combine_receipts(receipts, receipt_df), managerial_receipts)
+            notes.append(f"{name}: receitas importadas")
+            recognized = True
+        if not managerial_expenses.empty:
+            expenses = combine_expenses(expenses, managerial_expenses)
+            notes.append(f"{name}: despesas importadas")
+            recognized = True
+        if "ranking serviços" in lower or "ranking servicos" in lower:
+            services = service_df
+            notes.append(f"{name}: ranking de serviços importado")
+            recognized = True
+        elif "ranking produtos" in lower:
+            products = product_df
+            notes.append(f"{name}: ranking de produtos importado")
+            recognized = True
+        if not recognized:
+            notes.append(f"{name}: arquivo lido, mas não identificado como relatório conhecido")
+
+    return ensure_month_column(receipts), expenses, accounts, services, products, notes
 
 
 def clean_ranking(df: pd.DataFrame, name_col: str, qty_col: str) -> pd.DataFrame:
@@ -739,33 +982,66 @@ def build_export(
     return output.getvalue()
 
 
+def build_partner_report(month: pd.Timestamp, history: pd.DataFrame, expenses: pd.DataFrame) -> str:
+    history = normalize_history(history)
+    row = receipt_for_month(history.rename(columns={"Faturamento Liquido": "Total Liquido"}), month)
+    if row is None:
+        return "Ainda não há dados suficientes para gerar o relatório deste mês."
+
+    month_expenses = expenses_for_month(expenses, month)
+    by_category = (
+        month_expenses.groupby("Categoria")["Valor"].sum().sort_values(ascending=False)
+        if not month_expenses.empty
+        else pd.Series(dtype=float)
+    )
+    lines = [
+        f"# Fechamento - Barbearia Heloisa Mazzi - {month_label(month)}",
+        "",
+        f"Faturamento líquido: {format_brl(float(row.get('Total Liquido', 0.0)))}",
+        f"Despesas da barbearia: {format_brl(float(row.get('Total Barbearia', 0.0)))}",
+        f"Despesas pessoais: {format_brl(float(row.get('Despesas Pessoais', 0.0)))}",
+        f"Valor guardado: {format_brl(float(row.get('Valor Guardado', 0.0)))}",
+        f"Caixa após guardar: {format_brl(float(row.get('Caixa Apos Guardar', 0.0)))}",
+        f"Comprometimento: {format_pct(float(row.get('% Despesas', 0.0)))}",
+        f"Status: {normalize_text(row.get('Status'))}",
+        "",
+        "## Despesas por categoria",
+    ]
+    if by_category.empty:
+        lines.append("Sem despesas lançadas para este mês.")
+    else:
+        for category, value in by_category.items():
+            lines.append(f"- {category}: {format_brl(float(value))}")
+    lines.extend(
+        [
+            "",
+            "## Leitura",
+            "Saudável quando o faturamento atinge a meta, o comprometimento fica dentro do limite definido e sobra caixa após o valor guardado.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 st.set_page_config(page_title="Barbearia Heloisa Mazzi", layout="wide")
 st.title("Barbearia Heloisa Mazzi")
 st.caption("Gestão financeira mensal, despesas classificadas, parcelas, caixa, metas e evolução do negócio.")
 
 with st.sidebar:
-    st.header("Base histórica")
-    base_file = st.file_uploader("Base anterior do painel (.xlsx)", type=["xlsx"], key="base")
-    history_base, accounts_base, expenses_base, goals_base = load_history_base(base_file)
-
-    st.header("Relatórios do mês")
-    gerencial_file = st.file_uploader("Relatório gerencial receitas", type=["xlsx"], key="gerencial")
-    gerencial_despesas_file = st.file_uploader("Relatório gerencial despesas", type=["xlsx"], key="gerencial_despesas")
-    receb_file = st.file_uploader("Total recebimento período", type=["xlsx"], key="receb")
-    serv_file = st.file_uploader("Ranking serviços", type=["xlsx"], key="serv")
-    prod_file = st.file_uploader("Ranking produtos", type=["xlsx"], key="prod")
+    st.header("Relatórios e base")
+    report_files = st.file_uploader(
+        "Inclua aqui todos os relatórios do AppBarber",
+        type=["xlsx", "pdf"],
+        accept_multiple_files=True,
+        key="reports",
+    )
+    report_files = report_files or []
+    history_base, accounts_base, expenses_base, goals_base, base_loaded_name = load_base_from_reports(report_files)
 
     st.header("Atalho do mês")
     manual_month = st.text_input("Mês sem relatório", value=pd.Timestamp.today().strftime("%m/%Y"))
 
-gerencial_df = load_uploaded_excel(gerencial_file)
-gerencial_despesas_df = load_uploaded_excel(gerencial_despesas_file)
-receipts, receipt_summary = clean_receipts(load_uploaded_excel(receb_file))
-managerial_receipts = clean_managerial_financial(gerencial_df)
-managerial_expenses = combine_expenses(clean_managerial_expenses(gerencial_df), clean_managerial_expenses(gerencial_despesas_df))
-receipts = combine_receipts(receipts, managerial_receipts)
-services = clean_ranking(load_uploaded_excel(serv_file), "Servico", "Realizado")
-products = clean_ranking(load_uploaded_excel(prod_file), "Produto", "Vendidos")
+receipts, imported_expenses, imported_accounts, services, products, import_notes = process_uploaded_reports(report_files)
+receipt_summary: dict[str, float] = {}
 receipts = ensure_month_column(receipts)
 
 if "accounts_editor" not in st.session_state:
@@ -774,17 +1050,14 @@ if "expenses_editor" not in st.session_state:
     st.session_state.expenses_editor = expenses_base
 if "goals_editor" not in st.session_state:
     st.session_state.goals_editor = goals_base
-if base_file and st.session_state.get("base_loaded_name") != base_file.name:
-    st.session_state.accounts_editor = accounts_base
-    st.session_state.expenses_editor = expenses_base
+
+reports_signature = "|".join(f"{uploaded_name(file)}:{getattr(file, 'size', 0)}" for file in report_files)
+if reports_signature and st.session_state.get("reports_signature") != reports_signature:
+    st.session_state.accounts_editor = combine_accounts(accounts_base, imported_accounts)
+    st.session_state.expenses_editor = combine_expenses(expenses_base, imported_expenses)
     st.session_state.goals_editor = goals_base
-    st.session_state.base_loaded_name = base_file.name
-if gerencial_file and st.session_state.get("gerencial_loaded_name") != gerencial_file.name and not managerial_expenses.empty:
-    st.session_state.expenses_editor = combine_expenses(st.session_state.expenses_editor, managerial_expenses)
-    st.session_state.gerencial_loaded_name = gerencial_file.name
-if gerencial_despesas_file and st.session_state.get("gerencial_despesas_loaded_name") != gerencial_despesas_file.name and not managerial_expenses.empty:
-    st.session_state.expenses_editor = combine_expenses(st.session_state.expenses_editor, managerial_expenses)
-    st.session_state.gerencial_despesas_loaded_name = gerencial_despesas_file.name
+    st.session_state.reports_signature = reports_signature
+    st.session_state.base_loaded_name = base_loaded_name
 
 accounts = normalize_accounts(st.session_state.accounts_editor)
 expenses = normalize_expenses(st.session_state.expenses_editor)
@@ -796,11 +1069,15 @@ history = history_base.copy()
 history = ensure_month_column(history)
 
 if receipts.empty:
-    st.info("Suba o relatório gerencial financeiro ou `total recebimento periodo.xlsx` para calcular o faturamento. Você já pode editar contas e despesas.")
+    st.info("Suba relatórios do AppBarber em Excel/PDF para calcular faturamento, despesas e fechamento. Você já pode editar contas e despesas manualmente.")
 else:
     st.caption(f"Histórico de receitas carregado: {len(receipts)} mês(es), de {month_label(receipts['Mes'].min())} a {month_label(receipts['Mes'].max())}.")
 if not expenses.empty:
     st.caption(f"Histórico de despesas carregado: {len(expenses)} lançamento(s), de {month_label(expenses['Mes'].min())} a {month_label(expenses['Mes'].max())}.")
+if import_notes:
+    with st.expander("Arquivos lidos"):
+        for note in import_notes:
+            st.write(f"- {note}")
 
 history_months = month_options_from(history)
 expense_months = month_options_from(expenses)
@@ -1013,8 +1290,8 @@ with tab_rankings:
             st.bar_chart(products.head(10).set_index("Produto")[["Vendidos"]])
 
 with tab_export:
-    st.subheader("Exportar base atualizada")
-    st.caption("Baixe este arquivo e use como `Base anterior do painel` na próxima atualização mensal.")
+    st.subheader("Fechamento e exportação")
+    st.caption("Baixe a base para manter o histórico e gere um resumo do mês para enviar à sócia.")
     if "updated_history" not in locals():
         updated_history = history
     export_bytes = build_export(updated_history, accounts, expenses, goals, receipts, services, products)
@@ -1024,3 +1301,11 @@ with tab_export:
         file_name=f"base_painel_appbarber_{month_label(selected_month).replace('/', '_')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+    partner_report = build_partner_report(selected_month, updated_history, expenses)
+    st.download_button(
+        "Baixar relatório para sócia",
+        data=partner_report.encode("utf-8"),
+        file_name=f"fechamento_socia_{month_label(selected_month).replace('/', '_')}.md",
+        mime="text/markdown",
+    )
+    st.text_area("Prévia do relatório", partner_report, height=320)
