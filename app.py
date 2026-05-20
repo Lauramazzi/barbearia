@@ -630,6 +630,94 @@ def status_label(revenue: float, expense_pct: float, cash_after_saving: float, r
     return "OK"
 
 
+def receipt_for_month(receipts: pd.DataFrame, month: pd.Timestamp) -> pd.Series | None:
+    if receipts.empty or "Mes" not in receipts.columns:
+        return None
+    match = receipts[receipts["Mes"].eq(month)]
+    if match.empty:
+        return None
+    return match.iloc[0]
+
+
+def build_history_from_sources(
+    base_history: pd.DataFrame,
+    receipts: pd.DataFrame,
+    expenses: pd.DataFrame,
+    goals: pd.DataFrame,
+    current_month: pd.Timestamp,
+    current_saved_balance: float,
+    products_value: float,
+    products_share: float,
+    products_sold: float,
+    services_done_current: float,
+) -> pd.DataFrame:
+    base_history = normalize_history(base_history)
+    receipts = ensure_month_column(receipts)
+    expenses = normalize_expenses(expenses)
+
+    month_values: list[pd.Timestamp] = []
+    for source in [base_history, receipts, expenses]:
+        if not source.empty and "Mes" in source.columns:
+            month_values.extend(source["Mes"].map(parse_month).dropna().tolist())
+
+    if not pd.isna(current_month):
+        month_values.append(current_month)
+    if not month_values:
+        return base_history
+
+    rows = []
+    base_by_month = {row["Mes"]: row for _, row in base_history.iterrows()} if not base_history.empty else {}
+    for month in sorted(set(month_values)):
+        base_row = base_by_month.get(month)
+        receipt = receipt_for_month(receipts, month)
+        month_expenses = expenses_for_month(expenses, month)
+        barber_month_expenses = month_expenses[month_expenses["Centro"].eq("Barbearia")] if not month_expenses.empty else month_expenses
+        personal_month_expenses = month_expenses[month_expenses["Centro"].eq("Pessoal")] if not month_expenses.empty else month_expenses
+
+        revenue_liquid = float(receipt["Total Liquido"]) if receipt is not None else float(base_row.get("Faturamento Liquido", 0.0)) if base_row is not None else 0.0
+        fixed_barber = barber_month_expenses[barber_month_expenses["Tipo"].isin(["Fixo", "Parcela"])]["Valor"].sum() if not barber_month_expenses.empty else float(base_row.get("Fixas Barbearia", 0.0)) if base_row is not None else 0.0
+        variable_barber = barber_month_expenses[barber_month_expenses["Tipo"].eq("Variavel")]["Valor"].sum() if not barber_month_expenses.empty else float(base_row.get("Variaveis Barbearia", 0.0)) if base_row is not None else 0.0
+        one_off_barber = barber_month_expenses[barber_month_expenses["Tipo"].eq("Pontual")]["Valor"].sum() if not barber_month_expenses.empty else float(base_row.get("Investimentos/Pontuais", 0.0)) if base_row is not None else 0.0
+        personal_expenses = personal_month_expenses["Valor"].sum() if not personal_month_expenses.empty else float(base_row.get("Despesas Pessoais", 0.0)) if base_row is not None else 0.0
+        barber_expenses = fixed_barber + variable_barber + one_off_barber
+
+        saved_balance = current_saved_balance if month == current_month else float(base_row.get("Valor Guardado", 0.0)) if base_row is not None else 0.0
+        cash_free = revenue_liquid - barber_expenses
+        cash_after_saving = cash_free - saved_balance
+        expense_pct = barber_expenses / revenue_liquid if revenue_liquid else 0.0
+        month_goals = goals_for_month(goals, month)
+        status = status_label(
+            revenue_liquid,
+            expense_pct,
+            cash_after_saving,
+            month_goals["Meta Faturamento"],
+            month_goals["Meta Despesa %"] / 100,
+            month_goals["Meta Caixa Final"],
+        )
+
+        rows.append(
+            {
+                "Mes": month,
+                "Faturamento Liquido": revenue_liquid,
+                "Fixas Barbearia": fixed_barber,
+                "Variaveis Barbearia": variable_barber,
+                "Investimentos/Pontuais": one_off_barber,
+                "Total Barbearia": barber_expenses,
+                "Despesas Pessoais": personal_expenses,
+                "Valor Guardado": saved_balance,
+                "Caixa Livre": cash_free,
+                "Caixa Apos Guardar": cash_after_saving,
+                "% Despesas": expense_pct,
+                "Produtos Valor": products_value if month == current_month else float(base_row.get("Produtos Valor", 0.0)) if base_row is not None else 0.0,
+                "% Produtos": products_share if month == current_month else float(base_row.get("% Produtos", 0.0)) if base_row is not None else 0.0,
+                "Produtos Vendidos": products_sold if month == current_month else float(base_row.get("Produtos Vendidos", 0.0)) if base_row is not None else 0.0,
+                "Servicos Realizados": services_done_current if month == current_month else float(receipt.get("Comandas", 0.0)) if receipt is not None else float(base_row.get("Servicos Realizados", 0.0)) if base_row is not None else 0.0,
+                "Status": status,
+            }
+        )
+    return normalize_history(pd.DataFrame(rows, columns=HISTORY_COLUMNS))
+
+
 def build_export(
     history: pd.DataFrame,
     accounts: pd.DataFrame,
@@ -709,6 +797,10 @@ history = ensure_month_column(history)
 
 if receipts.empty:
     st.info("Suba o relatório gerencial financeiro ou `total recebimento periodo.xlsx` para calcular o faturamento. Você já pode editar contas e despesas.")
+else:
+    st.caption(f"Histórico de receitas carregado: {len(receipts)} mês(es), de {month_label(receipts['Mes'].min())} a {month_label(receipts['Mes'].max())}.")
+if not expenses.empty:
+    st.caption(f"Histórico de despesas carregado: {len(expenses)} lançamento(s), de {month_label(expenses['Mes'].min())} a {month_label(expenses['Mes'].max())}.")
 
 history_months = month_options_from(history)
 expense_months = month_options_from(expenses)
@@ -872,32 +964,18 @@ with tab_current:
         st.dataframe(chart_data, use_container_width=True, hide_index=True)
         st.bar_chart(month_expenses.groupby(["Categoria"])["Valor"].sum().sort_values(ascending=False))
 
-    current_row = pd.DataFrame(
-        [
-            {
-                "Mes": selected_month,
-                "Faturamento Liquido": revenue_liquid,
-                "Fixas Barbearia": fixed_barber,
-                "Variaveis Barbearia": variable_barber,
-                "Investimentos/Pontuais": one_off_barber,
-                "Total Barbearia": barber_expenses,
-                "Despesas Pessoais": personal_expenses,
-                "Valor Guardado": saved_balance,
-                "Caixa Livre": cash_free,
-                "Caixa Apos Guardar": cash_after_saving,
-                "% Despesas": expense_pct,
-                "Produtos Valor": products_value,
-                "% Produtos": products_share,
-                "Produtos Vendidos": products_sold,
-                "Servicos Realizados": services_done,
-                "Status": status,
-            }
-        ]
+    updated_history = build_history_from_sources(
+        history,
+        receipts,
+        expenses,
+        goals,
+        selected_month,
+        saved_balance,
+        products_value,
+        products_share,
+        products_sold,
+        services_done,
     )
-
-    history_without_month = history[~history["Mes"].eq(selected_month)] if not history.empty else history
-    updated_history = pd.concat([history_without_month, current_row], ignore_index=True)
-    updated_history = normalize_history(updated_history)
 
     if status == "OK":
         st.success("Cenário saudável dentro das metas configuradas.")
