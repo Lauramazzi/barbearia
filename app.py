@@ -280,6 +280,112 @@ def clean_receipts(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
     return receipts, summary
 
 
+def clean_managerial_financial(df: pd.DataFrame) -> pd.DataFrame:
+    columns = ["Mes", "Total Bruto", "Total Pago", "Total Liquido", "Comandas"]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    working = df.copy()
+    working.columns = [normalize_text(col) for col in working.columns]
+    required = {"Data", "Valor Bruto"}
+    if not required.issubset(set(working.columns)):
+        return pd.DataFrame(columns=columns)
+
+    working["Data"] = pd.to_datetime(working["Data"], errors="coerce", dayfirst=True)
+    working["Valor Bruto"] = working["Valor Bruto"].map(parse_money)
+    working = working.dropna(subset=["Data"])
+    working = working[working["Valor Bruto"] > 0]
+    if working.empty:
+        return pd.DataFrame(columns=columns)
+
+    working["Mes"] = working["Data"].map(lambda value: pd.Timestamp(year=value.year, month=value.month, day=1))
+    grouped = (
+        working.groupby("Mes", as_index=False)
+        .agg({"Valor Bruto": "sum", "Data": "count"})
+        .rename(columns={"Valor Bruto": "Total Bruto", "Data": "Comandas"})
+        .sort_values("Mes")
+    )
+    grouped["Total Pago"] = grouped["Total Bruto"]
+    grouped["Total Liquido"] = grouped["Total Bruto"]
+    return grouped[columns]
+
+
+def expense_type_from_category(category: str) -> str:
+    text = normalize_text(category).lower()
+    if "fixa" in text:
+        return "Fixo"
+    if "investimento" in text or "manutenção" in text or "reforma" in text:
+        return "Pontual"
+    if "parcel" in text:
+        return "Parcela"
+    return "Variavel"
+
+
+def clean_managerial_expenses(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=EXPENSE_COLUMNS)
+
+    working = df.copy()
+    working.columns = [normalize_text(col) for col in working.columns]
+    required = {"Despesa", "Descrição", "Data", "Valor Bruto"}
+    if not required.issubset(set(working.columns)):
+        return pd.DataFrame(columns=EXPENSE_COLUMNS)
+
+    working["Data"] = pd.to_datetime(working["Data"], errors="coerce", dayfirst=True)
+    working["Valor Bruto"] = working["Valor Bruto"].map(parse_money)
+    working = working.dropna(subset=["Data"])
+    working = working[working["Valor Bruto"] > 0]
+    working = working[~working["Despesa"].map(normalize_text).str.startswith("Total:")]
+    if working.empty:
+        return pd.DataFrame(columns=EXPENSE_COLUMNS)
+
+    rows = []
+    for _, row in working.iterrows():
+        month = pd.Timestamp(year=row["Data"].year, month=row["Data"].month, day=1)
+        category = normalize_text(row.get("Despesa"))
+        rows.append(
+            {
+                "Mes": month,
+                "Centro": "Barbearia",
+                "Categoria": category or "Outro",
+                "Tipo": expense_type_from_category(category),
+                "Descricao": normalize_text(row.get("Descrição")),
+                "Valor": float(row.get("Valor Bruto", 0.0)),
+                "Vencimento": row["Data"].strftime("%d/%m/%Y"),
+                "Forma Pagamento": normalize_text(row.get("Pagamento")) or "Outro",
+                "Parcela Atual": "",
+                "Total Parcelas": "",
+                "Status": "Pago",
+                "Observacoes": "Importado do Relatorio Gerencial Financeiro",
+            }
+        )
+    return normalize_expenses(pd.DataFrame(rows, columns=EXPENSE_COLUMNS))
+
+
+def combine_receipts(receipts: pd.DataFrame, managerial: pd.DataFrame) -> pd.DataFrame:
+    receipts = ensure_month_column(receipts)
+    managerial = ensure_month_column(managerial)
+    if receipts.empty:
+        return managerial
+    if managerial.empty:
+        return receipts
+    combined = pd.concat([receipts, managerial], ignore_index=True)
+    combined = combined.sort_values("Mes").drop_duplicates(subset=["Mes"], keep="last")
+    return combined
+
+
+def combine_expenses(existing: pd.DataFrame, imported: pd.DataFrame) -> pd.DataFrame:
+    existing = normalize_expenses(existing)
+    imported = normalize_expenses(imported)
+    if existing.empty:
+        return imported
+    if imported.empty:
+        return existing
+    combined = pd.concat([existing, imported], ignore_index=True)
+    dedupe_cols = ["Mes", "Centro", "Categoria", "Descricao", "Valor", "Vencimento"]
+    return combined.drop_duplicates(subset=dedupe_cols, keep="last").sort_values(["Mes", "Centro", "Categoria"])
+
+
 def clean_ranking(df: pd.DataFrame, name_col: str, qty_col: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=[name_col, qty_col])
@@ -555,6 +661,8 @@ with st.sidebar:
     history_base, accounts_base, expenses_base, goals_base = load_history_base(base_file)
 
     st.header("Relatórios do mês")
+    gerencial_file = st.file_uploader("Relatório gerencial receitas", type=["xlsx"], key="gerencial")
+    gerencial_despesas_file = st.file_uploader("Relatório gerencial despesas", type=["xlsx"], key="gerencial_despesas")
     receb_file = st.file_uploader("Total recebimento período", type=["xlsx"], key="receb")
     serv_file = st.file_uploader("Ranking serviços", type=["xlsx"], key="serv")
     prod_file = st.file_uploader("Ranking produtos", type=["xlsx"], key="prod")
@@ -562,7 +670,12 @@ with st.sidebar:
     st.header("Atalho do mês")
     manual_month = st.text_input("Mês sem relatório", value=pd.Timestamp.today().strftime("%m/%Y"))
 
+gerencial_df = load_uploaded_excel(gerencial_file)
+gerencial_despesas_df = load_uploaded_excel(gerencial_despesas_file)
 receipts, receipt_summary = clean_receipts(load_uploaded_excel(receb_file))
+managerial_receipts = clean_managerial_financial(gerencial_df)
+managerial_expenses = combine_expenses(clean_managerial_expenses(gerencial_df), clean_managerial_expenses(gerencial_despesas_df))
+receipts = combine_receipts(receipts, managerial_receipts)
 services = clean_ranking(load_uploaded_excel(serv_file), "Servico", "Realizado")
 products = clean_ranking(load_uploaded_excel(prod_file), "Produto", "Vendidos")
 receipts = ensure_month_column(receipts)
@@ -578,6 +691,12 @@ if base_file and st.session_state.get("base_loaded_name") != base_file.name:
     st.session_state.expenses_editor = expenses_base
     st.session_state.goals_editor = goals_base
     st.session_state.base_loaded_name = base_file.name
+if gerencial_file and st.session_state.get("gerencial_loaded_name") != gerencial_file.name and not managerial_expenses.empty:
+    st.session_state.expenses_editor = combine_expenses(st.session_state.expenses_editor, managerial_expenses)
+    st.session_state.gerencial_loaded_name = gerencial_file.name
+if gerencial_despesas_file and st.session_state.get("gerencial_despesas_loaded_name") != gerencial_despesas_file.name and not managerial_expenses.empty:
+    st.session_state.expenses_editor = combine_expenses(st.session_state.expenses_editor, managerial_expenses)
+    st.session_state.gerencial_despesas_loaded_name = gerencial_despesas_file.name
 
 accounts = normalize_accounts(st.session_state.accounts_editor)
 expenses = normalize_expenses(st.session_state.expenses_editor)
@@ -589,7 +708,7 @@ history = history_base.copy()
 history = ensure_month_column(history)
 
 if receipts.empty:
-    st.info("Suba o relatório `total recebimento periodo.xlsx` para calcular o mês atual. Você já pode editar as contas na aba Contas.")
+    st.info("Suba o relatório gerencial financeiro ou `total recebimento periodo.xlsx` para calcular o faturamento. Você já pode editar contas e despesas.")
 
 history_months = month_options_from(history)
 expense_months = month_options_from(expenses)
@@ -732,7 +851,7 @@ with tab_current:
     period_revenue = receipts["Total Bruto"].sum() if not receipts.empty else 0.0
     products_share = products_value / period_revenue if period_revenue else 0.0
     products_sold = products["Vendidos"].sum() if not products.empty else 0.0
-    services_done = services["Realizado"].sum() if not services.empty else 0.0
+    services_done = services["Realizado"].sum() if not services.empty else float(selected_receipt.get("Comandas", 0.0)) if selected_receipt is not None else 0.0
     status = status_label(revenue_liquid, expense_pct, cash_after_saving, revenue_goal, expense_goal, cash_goal)
 
     k1, k2, k3, k4 = st.columns(4)
