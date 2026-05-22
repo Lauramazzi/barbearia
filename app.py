@@ -27,6 +27,8 @@ import plotly.express as px
 import streamlit as st
 from fpdf import FPDF
 
+APP_VERSION = "2026-05-22.1"
+
 # ──────────────────────────────────────────────────────────────
 # CONSTANTES
 # ──────────────────────────────────────────────────────────────
@@ -1406,6 +1408,7 @@ def main():
     # Sidebar
     with st.sidebar:
         st.markdown("## ✂️ Barbearia Heloisa Mazzi")
+        st.caption(f"Versão do painel: {APP_VERSION}")
         st.markdown("---")
 
         # Seleção de mês
