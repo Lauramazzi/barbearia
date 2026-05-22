@@ -27,7 +27,7 @@ import plotly.express as px
 import streamlit as st
 from fpdf import FPDF
 
-APP_VERSION = "2026-05-22.6"
+APP_VERSION = "2026-05-22.7"
 
 # ──────────────────────────────────────────────────────────────
 # CONSTANTES
@@ -273,32 +273,83 @@ def ler_excel_upload(file) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
-def limpar_ranking(df: pd.DataFrame, col_nome: str, col_qtd: str) -> pd.DataFrame:
+def limpar_ranking(df: pd.DataFrame, col_nome: str, col_qtd: str, mes_ts: pd.Timestamp | None = None) -> pd.DataFrame:
     if df.empty:
-        return pd.DataFrame(columns=[col_nome, col_qtd])
+        return pd.DataFrame(columns=["Mes", col_nome, col_qtd])
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
     c0, c1 = df.columns[0], df.columns[1] if len(df.columns) > 1 else df.columns[0]
     result = pd.DataFrame({
+        "Mes": mes_ts if mes_ts is not None else mes_atual_ts(),
         col_nome: df[c0].astype(str).str.strip(),
         col_qtd: df[c1].apply(lambda x: float(str(x).replace(",", ".") or 0) if x else 0),
     })
     result = result[result[col_nome].str.len() > 0]
     return result.sort_values(col_qtd, ascending=False).reset_index(drop=True)
 
-def processar_recebimentos(df: pd.DataFrame) -> pd.DataFrame:
+def processar_recebimentos(df: pd.DataFrame, mes_padrao: pd.Timestamp | None = None) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["Mes", "Faturamento"])
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
-    c0 = df.columns[0]
     rows = []
     for _, row in df.iterrows():
         mes = parse_mes(row.iloc[0])
         if mes is not None:
             val = parse_money(row.iloc[1]) if len(row) > 1 else 0.0
             rows.append({"Mes": mes, "Faturamento": val})
-    return pd.DataFrame(rows).sort_values("Mes") if rows else pd.DataFrame(columns=["Mes", "Faturamento"])
+    if rows:
+        return pd.DataFrame(rows).sort_values("Mes")
+
+    if mes_padrao is not None:
+        money_values = []
+        for value in df.to_numpy().flatten():
+            text = str(value or "")
+            if "R$" in text or "," in text:
+                parsed = parse_money(text)
+                if parsed > 0:
+                    money_values.append(parsed)
+        if money_values:
+            return pd.DataFrame([{"Mes": mes_padrao, "Faturamento": max(money_values)}])
+    return pd.DataFrame(columns=["Mes", "Faturamento"])
+
+def normalizar_ranking_estado(df: pd.DataFrame, col_nome: str, col_qtd: str) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["Mes", col_nome, col_qtd])
+    result = df.copy()
+    if "Mes" not in result.columns:
+        result["Mes"] = mes_atual_ts()
+    result["Mes"] = result["Mes"].apply(lambda v: parse_mes(v) if parse_mes(v) is not None else mes_atual_ts())
+    for col in [col_nome, col_qtd]:
+        if col not in result.columns:
+            result[col] = 0 if col == col_qtd else ""
+    result[col_qtd] = pd.to_numeric(result[col_qtd], errors="coerce").fillna(0)
+    result[col_nome] = result[col_nome].map(limpar_texto_exibicao)
+    return result[["Mes", col_nome, col_qtd]].sort_values(["Mes", col_qtd], ascending=[True, False]).reset_index(drop=True)
+
+def ranking_do_mes(df: pd.DataFrame, mes_ts: pd.Timestamp, col_nome: str, col_qtd: str) -> pd.DataFrame:
+    result = normalizar_ranking_estado(df, col_nome, col_qtd)
+    if result.empty:
+        return result
+    result["_mes"] = result["Mes"].apply(parse_mes)
+    return result[result["_mes"] == mes_ts].drop(columns=["_mes"]).sort_values(col_qtd, ascending=False).reset_index(drop=True)
+
+def substituir_ranking_mes(df_atual: pd.DataFrame, df_novo: pd.DataFrame, mes_ts: pd.Timestamp, col_nome: str, col_qtd: str) -> pd.DataFrame:
+    atual = normalizar_ranking_estado(df_atual, col_nome, col_qtd)
+    atual["_mes"] = atual["Mes"].apply(parse_mes)
+    atual = atual[atual["_mes"] != mes_ts].drop(columns=["_mes"])
+    novo = normalizar_ranking_estado(df_novo, col_nome, col_qtd)
+    return pd.concat([atual, novo], ignore_index=True).sort_values(["Mes", col_qtd], ascending=[True, False]).reset_index(drop=True)
+
+def identificar_relatorio_appbarber(nome_arquivo: str, df: pd.DataFrame) -> str:
+    texto = f"{nome_arquivo} {' '.join(map(str, df.columns))}".lower()
+    if "produto" in texto:
+        return "produtos"
+    if "serv" in texto:
+        return "servicos"
+    if "receb" in texto or "fatur" in texto or "periodo" in texto or "período" in texto:
+        return "recebimentos"
+    return "desconhecido"
 
 # ──────────────────────────────────────────────────────────────
 # DADOS DEFAULT
@@ -430,9 +481,9 @@ def init_state():
     if "metas" not in st.session_state:
         st.session_state.metas = metas_default()
     if "servicos" not in st.session_state:
-        st.session_state.servicos = pd.DataFrame(columns=["Serviço", "Realizados"])
+        st.session_state.servicos = pd.DataFrame(columns=["Mes", "Serviço", "Realizados"])
     if "produtos" not in st.session_state:
-        st.session_state.produtos = pd.DataFrame(columns=["Produto", "Vendidos"])
+        st.session_state.produtos = pd.DataFrame(columns=["Mes", "Produto", "Vendidos"])
     if "faturamento_mes" not in st.session_state:
         st.session_state.faturamento_mes = {}
     if "valor_guardado_mes" not in st.session_state:
@@ -443,6 +494,8 @@ def init_state():
     for key in ["saidas", "historico", "metas", "servicos", "produtos"]:
         if key in st.session_state and isinstance(st.session_state[key], pd.DataFrame):
             st.session_state[key] = limpar_dataframe_estado(st.session_state[key])
+    st.session_state.servicos = normalizar_ranking_estado(st.session_state.servicos, "Serviço", "Realizados")
+    st.session_state.produtos = normalizar_ranking_estado(st.session_state.produtos, "Produto", "Vendidos")
 
     historico_padrao = historico_default_appbarber()
     hist = st.session_state.historico.copy()
@@ -477,6 +530,31 @@ def metas_do_mes(mes_ts: pd.Timestamp) -> dict:
 
 def calcular_resumo_mes(mes_ts: pd.Timestamp) -> dict:
     label = label_mes(mes_ts)
+    hist = st.session_state.historico.copy()
+    if not hist.empty and "Mes" in hist.columns:
+        hist["_mes"] = hist["Mes"].apply(parse_mes)
+        fechado_salvo = hist[(hist["_mes"] == mes_ts) & (hist["_mes"].isin(MESES_FECHADOS))]
+        if not fechado_salvo.empty:
+            row = fechado_salvo.iloc[-1]
+            faturamento_hist = float(row.get("Faturamento", 0) or 0)
+            desp_barb_hist = float(row.get("Despesas Barbearia", 0) or 0)
+            pct_hist = (desp_barb_hist / faturamento_hist * 100) if faturamento_hist > 0 else 0.0
+            metas_hist = metas_do_mes(mes_ts)
+            return {
+                "Faturamento": faturamento_hist,
+                "Despesas Barbearia": desp_barb_hist,
+                "Despesas Pessoais": float(row.get("Despesas Pessoais", 0) or 0),
+                "Total Despesas": float(row.get("Total Despesas", 0) or 0),
+                "Valor Guardado": float(row.get("Valor Guardado", 0) or 0),
+                "Saldo Livre": float(row.get("Saldo Livre", 0) or 0),
+                "% Despesas Barb": pct_hist,
+                "Produtos Vendidos": float(row.get("Produtos Vendidos", 0) or 0),
+                "Servicos Realizados": float(row.get("Servicos Realizados", 0) or 0),
+                "Metas": metas_hist,
+                "Atingiu Meta": bool(row.get("Atingiu Meta", False)),
+                "Status": limpar_texto_exibicao(row.get("Status"), "Atenção"),
+            }
+
     saidas = saidas_do_mes(mes_ts)
     faturamento = st.session_state.faturamento_mes.get(label, 0.0)
     valor_guardado = st.session_state.valor_guardado_mes.get(label, 0.0)
@@ -487,17 +565,31 @@ def calcular_resumo_mes(mes_ts: pd.Timestamp) -> dict:
 
     saldo_livre = faturamento - total_desp - valor_guardado
     pct_desp = (desp_barb / faturamento * 100) if faturamento > 0 else 0.0
+    produtos_mes = ranking_do_mes(st.session_state.produtos, mes_ts, "Produto", "Vendidos")
+    servicos_mes = ranking_do_mes(st.session_state.servicos, mes_ts, "Serviço", "Realizados")
+    produtos_vendidos = float(produtos_mes["Vendidos"].sum()) if not produtos_mes.empty else 0.0
+    servicos_realizados = float(servicos_mes["Realizados"].sum()) if not servicos_mes.empty else 0.0
 
     metas = metas_do_mes(mes_ts)
     atingiu = (
         faturamento >= metas["Meta Faturamento"] and
-        pct_desp <= metas["Meta Despesas %"]
+        pct_desp <= metas["Meta Despesas %"] and
+        valor_guardado >= metas["Meta Valor Guardado"] and
+        saldo_livre >= metas["Meta Saldo Livre"] and
+        servicos_realizados >= metas["Meta Servicos"] and
+        produtos_vendidos >= metas["Meta Produtos Vendidos"]
     )
     if faturamento == 0:
         status = "Sem dados"
-    elif pct_desp > metas["Meta Despesas %"] * 1.15 or faturamento < metas["Meta Faturamento"] * 0.85:
+    elif saldo_livre < 0 or pct_desp > metas["Meta Despesas %"] * 1.15 or faturamento < metas["Meta Faturamento"] * 0.85:
         status = "Crítico"
-    elif pct_desp > metas["Meta Despesas %"] or faturamento < metas["Meta Faturamento"]:
+    elif (
+        pct_desp > metas["Meta Despesas %"] or
+        faturamento < metas["Meta Faturamento"] or
+        valor_guardado < metas["Meta Valor Guardado"] or
+        servicos_realizados < metas["Meta Servicos"] or
+        produtos_vendidos < metas["Meta Produtos Vendidos"]
+    ):
         status = "Atenção"
     else:
         status = "OK"
@@ -510,6 +602,8 @@ def calcular_resumo_mes(mes_ts: pd.Timestamp) -> dict:
         "Valor Guardado": valor_guardado,
         "Saldo Livre": saldo_livre,
         "% Despesas Barb": pct_desp,
+        "Produtos Vendidos": produtos_vendidos,
+        "Servicos Realizados": servicos_realizados,
         "Metas": metas,
         "Atingiu Meta": atingiu,
         "Status": status,
@@ -534,8 +628,8 @@ def atualizar_historico(mes_ts: pd.Timestamp):
         "Meta Despesas %": resumo["Metas"]["Meta Despesas %"],
         "Atingiu Meta": resumo["Atingiu Meta"],
         "Produtos Valor": 0.0,
-        "Produtos Vendidos": float(st.session_state.produtos["Vendidos"].sum()) if not st.session_state.produtos.empty and "Vendidos" in st.session_state.produtos.columns else 0.0,
-        "Servicos Realizados": float(st.session_state.servicos["Realizados"].sum()) if not st.session_state.servicos.empty and "Realizados" in st.session_state.servicos.columns else 0.0,
+        "Produtos Vendidos": resumo["Produtos Vendidos"],
+        "Servicos Realizados": resumo["Servicos Realizados"],
         "Status": resumo["Status"],
     }
     hist = pd.concat([hist, pd.DataFrame([nova_linha])], ignore_index=True)
@@ -590,17 +684,17 @@ def importar_base(file):
         if "Faturamento" in sheets:
             fat = xl.parse("Faturamento")
             for _, row in fat.iterrows():
-                st.session_state.faturamento_mes[str(row["Mes"])] = float(row.get("Faturamento", 0))
+                st.session_state.faturamento_mes[label_mes(row["Mes"]) or str(row["Mes"])] = float(row.get("Faturamento", 0))
 
         if "ValorGuardado" in sheets:
             vg = xl.parse("ValorGuardado")
             for _, row in vg.iterrows():
-                st.session_state.valor_guardado_mes[str(row["Mes"])] = float(row.get("ValorGuardado", 0))
+                st.session_state.valor_guardado_mes[label_mes(row["Mes"]) or str(row["Mes"])] = float(row.get("ValorGuardado", 0))
 
         if "Ranking_Servicos" in sheets:
-            st.session_state.servicos = xl.parse("Ranking_Servicos")
+            st.session_state.servicos = normalizar_ranking_estado(xl.parse("Ranking_Servicos"), "Serviço", "Realizados")
         if "Ranking_Produtos" in sheets:
-            st.session_state.produtos = xl.parse("Ranking_Produtos")
+            st.session_state.produtos = normalizar_ranking_estado(xl.parse("Ranking_Produtos"), "Produto", "Vendidos")
 
         return True
     except Exception as e:
@@ -840,30 +934,7 @@ def aba_dashboard(mes_ts: pd.Timestamp):
     fechado = mes_fechado(mes_ts)
     if fechado:
         st.info("Este mês já está fechado no histórico. Janeiro a abril ficam travados; use maio para o fechamento atual.")
-
-    # Faturamento e valor guardado
-    col1, col2 = st.columns(2)
-    label = label_mes(mes_ts)
-    with col1:
-        fat = st.number_input(
-            "💰 Faturamento do mês (R$)",
-            value=float(st.session_state.faturamento_mes.get(label, 0.0)),
-            min_value=0.0, step=100.0, format="%.2f",
-            help="Digite o faturamento líquido total do AppBarber para este mês",
-            key=f"fat_{label}",
-            disabled=fechado,
-        )
-        st.session_state.faturamento_mes[label] = fat
-    with col2:
-        vg = st.number_input(
-            "🏦 Valor Guardado este mês (R$)",
-            value=float(st.session_state.valor_guardado_mes.get(label, 0.0)),
-            min_value=0.0, step=50.0, format="%.2f",
-            help="Quanto foi guardado/poupado neste mês",
-            key=f"vg_{label}",
-            disabled=fechado,
-        )
-        st.session_state.valor_guardado_mes[label] = vg
+    st.caption("Faturamento, serviços e produtos vêm dos relatórios do AppBarber. Saídas e valor guardado são lançamentos manuais.")
 
     resumo = calcular_resumo_mes(mes_ts)
     metas = resumo["Metas"]
@@ -888,7 +959,7 @@ def aba_dashboard(mes_ts: pd.Timestamp):
         (c4, "🏦 Guardado", resumo["Valor Guardado"], "info"),
         (c5, "✅ Saldo Livre", resumo["Saldo Livre"], "success" if resumo["Saldo Livre"] >= 0 else "error"),
     ]
-    for col, titulo, valor, tipo in kpis[:-1]:
+    for col, titulo, valor, tipo in kpis:
         col.metric(titulo, formatar_brl(valor))
     c6.metric("📊 % Desp/Fat", formatar_pct(resumo["% Despesas Barb"]),
               delta=f"Meta: {formatar_pct(metas['Meta Despesas %'])}",
@@ -898,7 +969,7 @@ def aba_dashboard(mes_ts: pd.Timestamp):
 
     # Gráficos de meta
     st.subheader("🎯 Metas do Mês")
-    g1, g2, g3 = st.columns(3)
+    g1, g2, g3, g4 = st.columns(4)
     with g1:
         st.plotly_chart(render_gauge(resumo["Faturamento"], metas["Meta Faturamento"], "Faturamento", "R$"),
                         use_container_width=True, key="gauge_fat")
@@ -908,6 +979,9 @@ def aba_dashboard(mes_ts: pd.Timestamp):
     with g3:
         st.plotly_chart(render_gauge(resumo["Valor Guardado"], metas["Meta Valor Guardado"], "Valor Guardado", "R$"),
                         use_container_width=True, key="gauge_guard")
+    with g4:
+        st.plotly_chart(render_gauge(resumo["Servicos Realizados"], metas["Meta Servicos"], "Serviços", ""),
+                        use_container_width=True, key="gauge_serv")
 
     # Composição das despesas
     if not saidas_do_mes(mes_ts).empty:
@@ -948,41 +1022,95 @@ def aba_dashboard(mes_ts: pd.Timestamp):
         )
 
 
+def aba_importar_appbarber(mes_ts: pd.Timestamp):
+    st.header(f"📥 Relatórios AppBarber — {mes_extenso(mes_ts)}")
+    st.caption("Suba os relatórios oficiais do AppBarber. O painel identifica recebimentos, ranking de serviços e ranking de produtos pelo nome/colunas do arquivo.")
+    fechado = mes_fechado(mes_ts)
+    if fechado:
+        st.info("Este mês já está fechado. Os relatórios ficam em consulta, sem sobrescrever o histórico.")
+
+    uploads = st.file_uploader(
+        "Enviar relatórios do mês",
+        type=["xlsx"],
+        accept_multiple_files=True,
+        key=f"up_appbarber_lote_{label_mes(mes_ts)}",
+        help="Pode enviar juntos: Total de recebimentos, Ranking de Serviços e Ranking de Produtos.",
+    )
+
+    col_info1, col_info2, col_info3 = st.columns(3)
+    col_info1.metric("Faturamento importado", formatar_brl(float(st.session_state.faturamento_mes.get(label_mes(mes_ts), 0.0))))
+    col_info2.metric("Serviços no mês", f"{calcular_resumo_mes(mes_ts)['Servicos Realizados']:.0f}")
+    col_info3.metric("Produtos no mês", f"{calcular_resumo_mes(mes_ts)['Produtos Vendidos']:.0f}")
+
+    if st.button("📊 Ler relatórios enviados", type="primary", disabled=fechado or not uploads, use_container_width=True):
+        importados = {"recebimentos": 0, "servicos": 0, "produtos": 0, "desconhecido": 0}
+        for arquivo in uploads:
+            df = ler_excel_upload(arquivo)
+            tipo = identificar_relatorio_appbarber(arquivo.name, df)
+            if tipo == "recebimentos":
+                result = processar_recebimentos(df, mes_padrao=mes_ts)
+                if result.empty:
+                    importados["desconhecido"] += 1
+                    continue
+                for _, row in result.iterrows():
+                    lbl = label_mes(row["Mes"]) or label_mes(mes_ts)
+                    st.session_state.faturamento_mes[lbl] = float(row["Faturamento"])
+                importados["recebimentos"] += len(result)
+            elif tipo == "servicos":
+                ranking = limpar_ranking(df, "Serviço", "Realizados", mes_ts=mes_ts)
+                st.session_state.servicos = substituir_ranking_mes(st.session_state.servicos, ranking, mes_ts, "Serviço", "Realizados")
+                importados["servicos"] += len(ranking)
+            elif tipo == "produtos":
+                ranking = limpar_ranking(df, "Produto", "Vendidos", mes_ts=mes_ts)
+                st.session_state.produtos = substituir_ranking_mes(st.session_state.produtos, ranking, mes_ts, "Produto", "Vendidos")
+                importados["produtos"] += len(ranking)
+            else:
+                importados["desconhecido"] += 1
+        st.success(
+            f"Importação concluída: {importados['recebimentos']} recebimento(s), "
+            f"{importados['servicos']} serviço(s), {importados['produtos']} produto(s)."
+        )
+        if importados["desconhecido"]:
+            st.warning(f"{importados['desconhecido']} arquivo(s) não foram identificados. Renomeie com recebimentos, serviços ou produtos.")
+        st.rerun()
+
+    st.divider()
+    st.subheader("Prévia dos dados oficiais do mês")
+    servicos_mes = ranking_do_mes(st.session_state.servicos, mes_ts, "Serviço", "Realizados")
+    produtos_mes = ranking_do_mes(st.session_state.produtos, mes_ts, "Produto", "Vendidos")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write("**Serviços mais realizados**")
+        if servicos_mes.empty:
+            st.info("Nenhum ranking de serviços importado para este mês.")
+        else:
+            st.dataframe(limpar_dataframe_exibicao(servicos_mes[["Serviço", "Realizados"]].head(10)), use_container_width=True, hide_index=True)
+    with c2:
+        st.write("**Produtos mais vendidos**")
+        if produtos_mes.empty:
+            st.info("Nenhum ranking de produtos importado para este mês.")
+        else:
+            st.dataframe(limpar_dataframe_exibicao(produtos_mes[["Produto", "Vendidos"]].head(10)), use_container_width=True, hide_index=True)
+
+
 def aba_saidas(mes_ts: pd.Timestamp):
-    st.header(f"➕ Adicionar Dados — {mes_extenso(mes_ts)}")
-    st.caption("Use esta área para importar relatórios do AppBarber e lançar gastos, pagamentos, parcelas e reposição de estoque.")
+    st.header(f"💸 Despesas e Guardado — {mes_extenso(mes_ts)}")
+    st.caption("Aqui entram somente os dados manuais: saídas, pagamentos, parcelas, reposição de estoque e dinheiro guardado.")
     fechado = mes_fechado(mes_ts)
     if fechado:
         st.info("Este mês já está fechado. Os dados ficam disponíveis para consulta, mas lançamentos e importações ficam bloqueados.")
 
-    # Importar do AppBarber
-    with st.expander("📥 Importar Relatórios do AppBarber", expanded=True):
-        st.info("Suba os relatórios exportados do AppBarber e clique em Processar Uploads.")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            f_rec = st.file_uploader("Total Recebimento", type=["xlsx"], key="up_rec")
-        with col2:
-            f_serv = st.file_uploader("Ranking Serviços", type=["xlsx"], key="up_serv")
-        with col3:
-            f_prod = st.file_uploader("Ranking Produtos", type=["xlsx"], key="up_prod")
-
-        if st.button("📊 Processar Uploads", disabled=fechado):
-            if f_rec:
-                df_rec = ler_excel_upload(f_rec)
-                result = processar_recebimentos(df_rec)
-                for _, row in result.iterrows():
-                    lbl = label_mes(row["Mes"])
-                    st.session_state.faturamento_mes[lbl] = row["Faturamento"]
-                st.success(f"✅ Recebimentos importados: {len(result)} meses")
-            if f_serv:
-                df_s = ler_excel_upload(f_serv)
-                st.session_state.servicos = limpar_ranking(df_s, "Serviço", "Realizados")
-                st.success("✅ Ranking de serviços importado")
-            if f_prod:
-                df_p = ler_excel_upload(f_prod)
-                st.session_state.produtos = limpar_ranking(df_p, "Produto", "Vendidos")
-                st.success("✅ Ranking de produtos importado")
-            st.rerun()
+    label = label_mes(mes_ts)
+    guardado = st.number_input(
+        "🏦 Valor guardado no mês (R$)",
+        value=float(st.session_state.valor_guardado_mes.get(label, 0.0)),
+        min_value=0.0,
+        step=50.0,
+        format="%.2f",
+        key=f"guardado_manual_{label}",
+        disabled=fechado,
+    )
+    st.session_state.valor_guardado_mes[label] = guardado
 
     # Formulário de nova saída
     with st.expander("💸 Registrar gasto ou pagamento manual", expanded=True):
@@ -1249,14 +1377,24 @@ def aba_metas():
 
 def aba_rankings():
     st.header("🏆 Rankings de Serviços e Produtos")
+    meses = sorted(
+        {label_mes(m) for m in list(st.session_state.servicos.get("Mes", [])) + list(st.session_state.produtos.get("Mes", [])) if label_mes(m)},
+        key=lambda x: parse_mes(x) or pd.Timestamp.min,
+    )
+    if not meses:
+        meses = [st.session_state.mes_selecionado]
+    mes_sel = st.selectbox("Mês do ranking", meses, index=len(meses) - 1, format_func=mes_extenso, key="ranking_mes")
+    mes_ts = parse_mes(mes_sel)
+    if mes_ts is None:
+        mes_ts = mes_atual_ts()
 
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("✂️ Serviços mais Realizados")
-        servicos = st.session_state.servicos
+        servicos = ranking_do_mes(st.session_state.servicos, mes_ts, "Serviço", "Realizados")
         if servicos.empty or "Realizados" not in servicos.columns:
-            st.info("Faça upload do ranking de serviços na aba ➕ Adicionar Dados.")
+            st.info("Faça upload do ranking de serviços na aba 📥 Relatórios AppBarber.")
         else:
             top = servicos.head(10)
             fig = px.bar(top, x="Realizados", y="Serviço", orientation="h",
@@ -1269,9 +1407,9 @@ def aba_rankings():
 
     with col2:
         st.subheader("💊 Produtos mais Vendidos")
-        produtos = st.session_state.produtos
+        produtos = ranking_do_mes(st.session_state.produtos, mes_ts, "Produto", "Vendidos")
         if produtos.empty or "Vendidos" not in produtos.columns:
-            st.info("Faça upload do ranking de produtos na aba ➕ Adicionar Dados.")
+            st.info("Faça upload do ranking de produtos na aba 📥 Relatórios AppBarber.")
         else:
             top = produtos.head(10)
             fig = px.bar(top, x="Vendidos", y="Produto", orientation="h",
@@ -1284,8 +1422,8 @@ def aba_rankings():
 
 
 def aba_relatorios():
-    st.header("📄 Relatórios PDF")
-    st.write("Gere e baixe o relatório de fechamento de qualquer mês do histórico.")
+    st.header("📄 Relatório para Sócia")
+    st.write("Gere o PDF de fechamento com faturamento, despesas, metas, termômetro e observações do mês.")
 
     hist = st.session_state.historico.copy()
     hist["_mes"] = hist["Mes"].apply(parse_mes)
@@ -1419,7 +1557,7 @@ def aba_base():
             if "Faturamento" in xl.sheet_names:
                 fat_df = xl.parse("Faturamento")
                 for _, r in fat_df.iterrows():
-                    st.session_state.faturamento_mes[str(r["Mes"])] = float(r.get("Faturamento", 0))
+                    st.session_state.faturamento_mes[label_mes(r["Mes"]) or str(r["Mes"])] = float(r.get("Faturamento", 0))
             st.rerun()
         except Exception as e:
             st.error(f"Erro ao processar base AppBarber: {e}")
@@ -1474,7 +1612,7 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    st.caption(f"Painel atualizado - versão {APP_VERSION}. Use a aba ➕ Adicionar Dados para importar relatórios e lançar despesas.")
+    st.caption(f"Painel atualizado - versão {APP_VERSION}. Use 📥 Relatórios AppBarber para dados oficiais e 💸 Despesas e Guardado para lançamentos manuais.")
 
     init_state()
 
@@ -1551,13 +1689,15 @@ def main():
             )
 
     # Abas principais
-    aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
+    aba1, aba2, aba3, aba4, aba5, aba6, aba7, aba8 = st.tabs([
         "📊 Dashboard",
-        "➕ Adicionar Dados",
-        "📈 Histórico",
+        "📥 Relatórios AppBarber",
+        "💸 Despesas e Guardado",
         "🎯 Metas",
+        "📈 Histórico",
         "🏆 Rankings",
-        "💾 Base / PDF",
+        "📄 Relatório Sócia",
+        "💾 Base",
     ])
 
     if mes_ts is None:
@@ -1567,19 +1707,19 @@ def main():
     with aba1:
         aba_dashboard(mes_ts)
     with aba2:
-        aba_saidas(mes_ts)
+        aba_importar_appbarber(mes_ts)
     with aba3:
-        aba_historico()
+        aba_saidas(mes_ts)
     with aba4:
         aba_metas()
     with aba5:
-        aba_rankings()
+        aba_historico()
     with aba6:
-        col_rel, col_base = st.columns([1, 1])
-        with col_rel:
-            aba_relatorios()
-        with col_base:
-            aba_base()
+        aba_rankings()
+    with aba7:
+        aba_relatorios()
+    with aba8:
+        aba_base()
 
 
 if __name__ == "__main__":
