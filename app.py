@@ -543,7 +543,31 @@ def importar_base(file):
 # GERAÇÃO DE PDF
 # ──────────────────────────────────────────────────────────────
 
+def texto_pdf(valor) -> str:
+    """Converte caracteres fora do Latin-1 para equivalentes aceitos pela fonte padrão do PDF."""
+    texto = str(valor or "")
+    substituicoes = {
+        "—": "-",
+        "–": "-",
+        "·": "-",
+        "✓": "OK",
+        "✗": "X",
+        "⚠": "!",
+        "✅": "OK",
+        "📄": "",
+        "📊": "",
+        "💸": "",
+    }
+    for original, novo in substituicoes.items():
+        texto = texto.replace(original, novo)
+    return texto.encode("latin-1", errors="ignore").decode("latin-1")
+
 class PDFRelatorio(FPDF):
+    def cell(self, w=None, h=None, text="", *args, **kwargs):
+        if "txt" in kwargs and not text:
+            kwargs["txt"] = texto_pdf(kwargs["txt"])
+        return super().cell(w, h, texto_pdf(text), *args, **kwargs)
+
     def header(self):
         self.set_fill_color(30, 30, 30)
         self.rect(0, 0, 210, 28, "F")
