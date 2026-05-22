@@ -27,7 +27,7 @@ import plotly.express as px
 import streamlit as st
 from fpdf import FPDF
 
-APP_VERSION = "2026-05-22.5"
+APP_VERSION = "2026-05-22.6"
 
 # ──────────────────────────────────────────────────────────────
 # CONSTANTES
@@ -1449,9 +1449,27 @@ def main():
     # CSS customizado
     st.markdown("""
     <style>
-    .stMetric { background: #f8f9fa; border-radius: 8px; padding: 12px; }
-    .stMetric label { font-size: 13px !important; color: #555 !important; }
-    [data-testid="stMetricValue"] { font-size: 20px !important; font-weight: bold !important; }
+    .stMetric,
+    [data-testid="stMetric"] {
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 12px;
+        color: #212529 !important;
+    }
+    .stMetric *,
+    [data-testid="stMetric"] * {
+        color: #212529 !important;
+    }
+    .stMetric label,
+    [data-testid="stMetric"] label {
+        font-size: 13px !important;
+        color: #495057 !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 20px !important;
+        font-weight: bold !important;
+        color: #212529 !important;
+    }
     .block-container { padding-top: 1rem; }
     </style>
     """, unsafe_allow_html=True)
