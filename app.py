@@ -184,6 +184,15 @@ def limpar_dataframe_exibicao(df: pd.DataFrame) -> pd.DataFrame:
             result[col] = result[col].map(limpar_texto_exibicao)
     return result.fillna("")
 
+def limpar_dataframe_estado(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    result = df.copy()
+    for col in result.columns:
+        if pd.api.types.is_object_dtype(result[col]) or pd.api.types.is_string_dtype(result[col]):
+            result[col] = result[col].map(limpar_texto_exibicao)
+    return result.fillna("")
+
 # ──────────────────────────────────────────────────────────────
 # LEITURA DE XLSX (compatível com AppBarber)
 # ──────────────────────────────────────────────────────────────
@@ -406,19 +415,23 @@ def init_state():
     if "mes_selecionado" not in st.session_state:
         st.session_state.mes_selecionado = label_mes(mes_atual_ts())
 
+    for key in ["saidas", "historico", "metas", "servicos", "produtos"]:
+        if key in st.session_state and isinstance(st.session_state[key], pd.DataFrame):
+            st.session_state[key] = limpar_dataframe_estado(st.session_state[key])
+
 # ──────────────────────────────────────────────────────────────
 # CÁLCULOS
 # ──────────────────────────────────────────────────────────────
 
 def saidas_do_mes(mes_ts: pd.Timestamp) -> pd.DataFrame:
-    df = st.session_state.saidas.copy()
+    df = limpar_dataframe_estado(st.session_state.saidas.copy())
     if df.empty:
         return df
     df["_mes"] = df["Mes"].apply(parse_mes)
     return df[df["_mes"] == mes_ts].drop(columns=["_mes"])
 
 def metas_do_mes(mes_ts: pd.Timestamp) -> dict:
-    df = st.session_state.metas.copy()
+    df = limpar_dataframe_estado(st.session_state.metas.copy())
     df["_mes"] = df["Mes"].apply(parse_mes)
     m = df[df["_mes"] == mes_ts]
     if m.empty:
