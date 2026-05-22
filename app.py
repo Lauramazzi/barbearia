@@ -160,6 +160,28 @@ def mes_atual_ts() -> pd.Timestamp:
 def cor_status(status: str) -> str:
     return {"OK": "🟢", "Atenção": "🟡", "Crítico": "🔴"}.get(status, "⚪")
 
+def limpar_texto_exibicao(valor, padrao: str = "") -> str:
+    if valor is None:
+        return padrao
+    try:
+        if pd.isna(valor):
+            return padrao
+    except Exception:
+        pass
+    texto = str(valor).strip()
+    if texto.lower() in {"none", "nan", "nat", "<na>"}:
+        return padrao
+    return texto
+
+def limpar_dataframe_exibicao(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    result = df.copy()
+    for col in result.columns:
+        if pd.api.types.is_object_dtype(result[col]) or pd.api.types.is_string_dtype(result[col]):
+            result[col] = result[col].map(limpar_texto_exibicao)
+    return result.fillna("")
+
 # ──────────────────────────────────────────────────────────────
 # LEITURA DE XLSX (compatível com AppBarber)
 # ──────────────────────────────────────────────────────────────
@@ -982,8 +1004,9 @@ def aba_saidas(mes_ts: pd.Timestamp):
         df_show = saidas_mes[saidas_mes["Centro"].isin(filtro_centro) & saidas_mes["Tipo"].isin(filtro_tipo)].copy()
         df_show["Valor_fmt"] = df_show["Valor"].apply(formatar_brl)
 
+        tabela_show = df_show[["Data", "Centro", "Categoria", "Tipo", "Descricao", "Valor_fmt", "Forma Pagamento", "Parcela Atual", "Total Parcelas", "Status"]].rename(columns={"Valor_fmt": "Valor"})
         st.dataframe(
-            df_show[["Data", "Centro", "Categoria", "Tipo", "Descricao", "Valor_fmt", "Forma Pagamento", "Parcela Atual", "Total Parcelas", "Status"]].rename(columns={"Valor_fmt": "Valor"}),
+            limpar_dataframe_exibicao(tabela_show),
             use_container_width=True, hide_index=True
         )
 
@@ -991,7 +1014,7 @@ def aba_saidas(mes_ts: pd.Timestamp):
         with st.expander("🗑 Excluir uma saída"):
             idx_options = df_show.index.tolist()
             if idx_options:
-                desc_options = [f"{r['Descricao']} — {formatar_brl(r['Valor'])} ({r.get('Data', '')})"
+                desc_options = [f"{limpar_texto_exibicao(r['Descricao'], 'Sem descrição')} — {formatar_brl(r['Valor'])} ({limpar_texto_exibicao(r.get('Data', ''))})"
                                 for _, r in df_show.iterrows()]
                 selected = st.selectbox("Selecione para excluir", options=range(len(desc_options)),
                                         format_func=lambda i: desc_options[i], key="excluir_idx")
@@ -1089,7 +1112,7 @@ def aba_historico():
         hist_show["% Despesas"] = hist_show["% Despesas"].apply(lambda x: formatar_pct(float(x) * 100 if float(x) < 1 else float(x)))
     cols_show = ["Mes Label", "Faturamento", "Total Despesas", "Despesas Barbearia", "Despesas Pessoais", "Valor Guardado", "Saldo Livre", "Status"]
     cols_show = [c for c in cols_show if c in hist_show.columns]
-    st.dataframe(hist_show[cols_show].rename(columns={"Mes Label": "Mês"}),
+    st.dataframe(limpar_dataframe_exibicao(hist_show[cols_show].rename(columns={"Mes Label": "Mês"})),
                  use_container_width=True, hide_index=True)
 
 
@@ -1114,7 +1137,7 @@ def aba_metas():
     metas_edit = metas[["Mes Label", "Meta Faturamento", "Meta Despesas %", "Meta Valor Guardado",
                           "Meta Saldo Livre", "Meta Servicos", "Meta Produtos Vendidos"]].copy()
     edited = st.data_editor(
-        metas_edit.rename(columns={"Mes Label": "Mês"}),
+        limpar_dataframe_exibicao(metas_edit.rename(columns={"Mes Label": "Mês"})),
         use_container_width=True, hide_index=True,
         column_config={
             "Meta Faturamento": st.column_config.NumberColumn("Meta Faturamento (R$)", format="R$ %.2f"),
@@ -1187,7 +1210,7 @@ def aba_rankings():
             fig.update_layout(height=350, margin=dict(l=0, r=0, t=40, b=0), coloraxis_showscale=False)
             fig.update_yaxes(autorange="reversed")
             st.plotly_chart(fig, use_container_width=True, key="rank_serv")
-            st.dataframe(top, use_container_width=True, hide_index=True)
+            st.dataframe(limpar_dataframe_exibicao(top), use_container_width=True, hide_index=True)
 
     with col2:
         st.subheader("💊 Produtos mais Vendidos")
@@ -1202,7 +1225,7 @@ def aba_rankings():
             fig.update_layout(height=350, margin=dict(l=0, r=0, t=40, b=0), coloraxis_showscale=False)
             fig.update_yaxes(autorange="reversed")
             st.plotly_chart(fig, use_container_width=True, key="rank_prod")
-            st.dataframe(top, use_container_width=True, hide_index=True)
+            st.dataframe(limpar_dataframe_exibicao(top), use_container_width=True, hide_index=True)
 
 
 def aba_relatorios():
