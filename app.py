@@ -27,7 +27,7 @@ import plotly.express as px
 import streamlit as st
 from fpdf import FPDF
 
-APP_VERSION = "2026-05-22.3"
+APP_VERSION = "2026-05-22.4"
 
 # ──────────────────────────────────────────────────────────────
 # CONSTANTES
@@ -80,6 +80,12 @@ CATEGORIAS_PESSOAL = [
 ]
 
 FORMAS_PAGTO = ["Pix", "Débito", "Crédito", "Boleto", "Dinheiro", "Outro"]
+MESES_FECHADOS = {
+    pd.Timestamp(2026, 1, 1),
+    pd.Timestamp(2026, 2, 1),
+    pd.Timestamp(2026, 3, 1),
+    pd.Timestamp(2026, 4, 1),
+}
 
 NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -161,6 +167,9 @@ def mes_atual_ts() -> pd.Timestamp:
 
 def cor_status(status: str) -> str:
     return {"OK": "🟢", "Atenção": "🟡", "Crítico": "🔴"}.get(status, "⚪")
+
+def mes_fechado(mes_ts: pd.Timestamp) -> bool:
+    return parse_mes(mes_ts) in MESES_FECHADOS
 
 def limpar_texto_exibicao(valor, padrao: str = "") -> str:
     if valor is None:
@@ -325,9 +334,9 @@ def metas_default() -> pd.DataFrame:
     """Metas progressivas para 2026."""
     rows = []
     base_fat = 9000.0
-    for m in range(2, 13):
+    for m in range(1, 13):
         mes = pd.Timestamp(2026, m, 1)
-        fator = 1 + (m - 2) * 0.03
+        fator = 1 + max(0, m - 2) * 0.03
         rows.append({
             "Mes": mes,
             "Meta Faturamento": round(base_fat * fator, -1),
@@ -340,16 +349,32 @@ def metas_default() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=COLUNAS_METAS)
 
 def historico_default_appbarber() -> pd.DataFrame:
-    """Histórico do AppBarber (Fev-Abr/2026) com base no relatório."""
+    """Histórico fechado de jan-abr/2026 com base nos relatórios enviados."""
     rows = [
         {
+            "Mes": pd.Timestamp(2026, 1, 1),
+            "Faturamento": 7214.90,
+            "Total Despesas": 3401.29,
+            "Despesas Barbearia": 3401.29,
+            "Despesas Pessoais": 0.0,
+            "Valor Guardado": 0.0,
+            "Saldo Livre": 7214.90 - 3401.29,
+            "Meta Faturamento": 9000.0,
+            "Meta Despesas %": 42.0,
+            "Atingiu Meta": False,
+            "Produtos Valor": 0.0,
+            "Produtos Vendidos": 0.0,
+            "Servicos Realizados": 0.0,
+            "Status": "Atenção",
+        },
+        {
             "Mes": pd.Timestamp(2026, 2, 1),
-            "Faturamento": 8300.0,
-            "Total Despesas": 3858.28,
-            "Despesas Barbearia": 3858.28,
-            "Despesas Pessoais": 1080.0,
-            "Valor Guardado": 500.0,
-            "Saldo Livre": 8300.0 - 3858.28 - 1080.0 - 500.0,
+            "Faturamento": 8299.90,
+            "Total Despesas": 3839.41,
+            "Despesas Barbearia": 3839.41,
+            "Despesas Pessoais": 0.0,
+            "Valor Guardado": 0.0,
+            "Saldo Livre": 8299.90 - 3839.41,
             "Meta Faturamento": 9000.0,
             "Meta Despesas %": 42.0,
             "Atingiu Meta": False,
@@ -360,12 +385,12 @@ def historico_default_appbarber() -> pd.DataFrame:
         },
         {
             "Mes": pd.Timestamp(2026, 3, 1),
-            "Faturamento": 9060.50,
-            "Total Despesas": 3858.28,
-            "Despesas Barbearia": 3858.28,
-            "Despesas Pessoais": 1080.0,
-            "Valor Guardado": 500.0,
-            "Saldo Livre": 9060.50 - 3858.28 - 1080.0 - 500.0,
+            "Faturamento": 9045.00,
+            "Total Despesas": 4232.47,
+            "Despesas Barbearia": 4232.47,
+            "Despesas Pessoais": 0.0,
+            "Valor Guardado": 0.0,
+            "Saldo Livre": 9045.00 - 4232.47,
             "Meta Faturamento": 9000.0,
             "Meta Despesas %": 42.0,
             "Atingiu Meta": True,
@@ -379,9 +404,9 @@ def historico_default_appbarber() -> pd.DataFrame:
             "Faturamento": 9060.50,
             "Total Despesas": 3858.28,
             "Despesas Barbearia": 3858.28,
-            "Despesas Pessoais": 1080.0,
-            "Valor Guardado": 500.0,
-            "Saldo Livre": 9060.50 - 3858.28 - 1080.0 - 500.0,
+            "Despesas Pessoais": 0.0,
+            "Valor Guardado": 0.0,
+            "Saldo Livre": 9060.50 - 3858.28,
             "Meta Faturamento": 9000.0,
             "Meta Despesas %": 42.0,
             "Atingiu Meta": True,
@@ -418,6 +443,12 @@ def init_state():
     for key in ["saidas", "historico", "metas", "servicos", "produtos"]:
         if key in st.session_state and isinstance(st.session_state[key], pd.DataFrame):
             st.session_state[key] = limpar_dataframe_estado(st.session_state[key])
+
+    historico_padrao = historico_default_appbarber()
+    hist = st.session_state.historico.copy()
+    hist["_mes"] = hist["Mes"].apply(parse_mes)
+    hist = hist[~hist["_mes"].isin(MESES_FECHADOS)].drop(columns=["_mes"])
+    st.session_state.historico = pd.concat([hist, historico_padrao], ignore_index=True).sort_values("Mes")
 
 # ──────────────────────────────────────────────────────────────
 # CÁLCULOS
@@ -806,6 +837,9 @@ def render_gauge(valor, meta, titulo, fmt="%"):
 
 def aba_dashboard(mes_ts: pd.Timestamp):
     st.header(f"📊 Dashboard — {mes_extenso(mes_ts)}")
+    fechado = mes_fechado(mes_ts)
+    if fechado:
+        st.info("Este mês já está fechado no histórico. Janeiro a abril ficam travados; use maio para o fechamento atual.")
 
     # Faturamento e valor guardado
     col1, col2 = st.columns(2)
@@ -817,6 +851,7 @@ def aba_dashboard(mes_ts: pd.Timestamp):
             min_value=0.0, step=100.0, format="%.2f",
             help="Digite o faturamento líquido total do AppBarber para este mês",
             key=f"fat_{label}",
+            disabled=fechado,
         )
         st.session_state.faturamento_mes[label] = fat
     with col2:
@@ -826,6 +861,7 @@ def aba_dashboard(mes_ts: pd.Timestamp):
             min_value=0.0, step=50.0, format="%.2f",
             help="Quanto foi guardado/poupado neste mês",
             key=f"vg_{label}",
+            disabled=fechado,
         )
         st.session_state.valor_guardado_mes[label] = vg
 
@@ -836,8 +872,9 @@ def aba_dashboard(mes_ts: pd.Timestamp):
 
     # Banner status
     cor_banner = {"OK": "#28a745", "Atenção": "#ffc107", "Crítico": "#dc3545", "Sem dados": "#6c757d"}.get(status, "#6c757d")
+    texto_banner = "#111111" if status in ["OK", "Atenção"] else "#ffffff"
     st.markdown(f"""
-    <div style="background:{cor_banner};color:white;padding:12px 20px;border-radius:8px;font-size:18px;font-weight:bold;margin-bottom:16px">
+    <div style="background:{cor_banner};color:{texto_banner};padding:12px 20px;border-radius:8px;font-size:18px;font-weight:bold;margin-bottom:16px">
     {emoji} Status do mês: {status}
     </div>
     """, unsafe_allow_html=True)
@@ -897,7 +934,7 @@ def aba_dashboard(mes_ts: pd.Timestamp):
     st.divider()
     col_btn1, col_btn2 = st.columns([1, 3])
     with col_btn1:
-        if st.button("🔒 Fechar Mês e Salvar no Histórico", type="primary", use_container_width=True):
+        if st.button("🔒 Fechar Mês e Salvar no Histórico", type="primary", use_container_width=True, disabled=fechado):
             atualizar_historico(mes_ts)
             st.success(f"✅ Mês {mes_extenso(mes_ts)} salvo no histórico!")
             st.rerun()
@@ -915,6 +952,9 @@ def aba_dashboard(mes_ts: pd.Timestamp):
 def aba_saidas(mes_ts: pd.Timestamp):
     st.header(f"➕ Adicionar Dados — {mes_extenso(mes_ts)}")
     st.caption("Use esta área para importar relatórios do AppBarber e lançar gastos, pagamentos, parcelas e reposição de estoque.")
+    fechado = mes_fechado(mes_ts)
+    if fechado:
+        st.info("Este mês já está fechado. Os dados ficam disponíveis para consulta, mas lançamentos e importações ficam bloqueados.")
 
     # Importar do AppBarber
     with st.expander("📥 Importar Relatórios do AppBarber", expanded=True):
@@ -927,7 +967,7 @@ def aba_saidas(mes_ts: pd.Timestamp):
         with col3:
             f_prod = st.file_uploader("Ranking Produtos", type=["xlsx"], key="up_prod")
 
-        if st.button("📊 Processar Uploads"):
+        if st.button("📊 Processar Uploads", disabled=fechado):
             if f_rec:
                 df_rec = ler_excel_upload(f_rec)
                 result = processar_recebimentos(df_rec)
@@ -969,7 +1009,7 @@ def aba_saidas(mes_ts: pd.Timestamp):
         with c5:
             obs = st.text_input("Observações", key="ns_obs", value="")
 
-        if st.button("💾 Adicionar Saída", type="primary"):
+        if st.button("💾 Adicionar Saída", type="primary", disabled=fechado):
             if not descricao:
                 st.error("Descrição é obrigatória.")
             elif valor <= 0:
@@ -1034,7 +1074,7 @@ def aba_saidas(mes_ts: pd.Timestamp):
                                 for _, r in df_show.iterrows()]
                 selected = st.selectbox("Selecione para excluir", options=range(len(desc_options)),
                                         format_func=lambda i: desc_options[i], key="excluir_idx")
-                if st.button("🗑 Confirmar Exclusão", type="secondary"):
+                if st.button("🗑 Confirmar Exclusão", type="secondary", disabled=fechado):
                     real_idx = idx_options[selected]
                     st.session_state.saidas = st.session_state.saidas.drop(index=real_idx).reset_index(drop=True)
                     st.success("Saída excluída.")
@@ -1430,7 +1470,7 @@ def main():
         # Seleção de mês
         st.markdown("### 📅 Mês de Trabalho")
         meses_opcoes = []
-        for m_offset in range(-3, 4):
+        for m_offset in range(-4, 4):
             today = datetime.date.today()
             m = today.month + m_offset
             y = today.year
@@ -1443,7 +1483,7 @@ def main():
         mes_sel_label = st.selectbox(
             "Selecione o mês",
             meses_opcoes,
-            index=meses_opcoes.index(st.session_state.mes_selecionado) if st.session_state.mes_selecionado in meses_opcoes else 3,
+            index=meses_opcoes.index(st.session_state.mes_selecionado) if st.session_state.mes_selecionado in meses_opcoes else meses_opcoes.index(label_mes(mes_atual_ts())),
             format_func=mes_extenso,
             key="sidebar_mes"
         )
