@@ -27,7 +27,7 @@ import plotly.express as px
 import streamlit as st
 from fpdf import FPDF
 
-APP_VERSION = "2026-05-22.4"
+APP_VERSION = "2026-05-22.5"
 
 # ──────────────────────────────────────────────────────────────
 # CONSTANTES
@@ -887,7 +887,6 @@ def aba_dashboard(mes_ts: pd.Timestamp):
         (c3, "🟠 Desp. Pessoais", resumo["Despesas Pessoais"], "warning"),
         (c4, "🏦 Guardado", resumo["Valor Guardado"], "info"),
         (c5, "✅ Saldo Livre", resumo["Saldo Livre"], "success" if resumo["Saldo Livre"] >= 0 else "error"),
-        (c6, "📊 % Despesas", None, None),
     ]
     for col, titulo, valor, tipo in kpis[:-1]:
         col.metric(titulo, formatar_brl(valor))
@@ -940,7 +939,7 @@ def aba_dashboard(mes_ts: pd.Timestamp):
             st.rerun()
     with col_btn2:
         pdf_bytes = gerar_pdf(mes_ts)
-        st.download_button(
+        _ = st.download_button(
             "📄 Baixar Relatório PDF do Mês",
             data=pdf_bytes,
             file_name=f"relatorio_barbearia_{label_mes(mes_ts).replace('/', '_')}.pdf",
@@ -1257,7 +1256,7 @@ def aba_rankings():
         st.subheader("✂️ Serviços mais Realizados")
         servicos = st.session_state.servicos
         if servicos.empty or "Realizados" not in servicos.columns:
-            st.info("Faça upload do ranking de serviços na aba de Saídas.")
+            st.info("Faça upload do ranking de serviços na aba ➕ Adicionar Dados.")
         else:
             top = servicos.head(10)
             fig = px.bar(top, x="Realizados", y="Serviço", orientation="h",
@@ -1272,7 +1271,7 @@ def aba_rankings():
         st.subheader("💊 Produtos mais Vendidos")
         produtos = st.session_state.produtos
         if produtos.empty or "Vendidos" not in produtos.columns:
-            st.info("Faça upload do ranking de produtos na aba de Saídas.")
+            st.info("Faça upload do ranking de produtos na aba ➕ Adicionar Dados.")
         else:
             top = produtos.head(10)
             fig = px.bar(top, x="Vendidos", y="Produto", orientation="h",
@@ -1318,7 +1317,7 @@ def aba_relatorios():
     col3.metric("Saldo Livre", formatar_brl(resumo["Saldo Livre"]))
 
     pdf_bytes = gerar_pdf(mes_ts)
-    st.download_button(
+    _ = st.download_button(
         f"📄 Baixar PDF — {mes_extenso(mes_ts)}",
         data=pdf_bytes,
         file_name=f"relatorio_barbearia_{mes_sel.replace('/', '_')}.pdf",
@@ -1342,7 +1341,7 @@ def aba_relatorios():
             c3.write(f"{cor_status(res['Status'])} {res['Status']}")
             with c4:
                 pdf_b = gerar_pdf(m_ts)
-                st.download_button("PDF", data=pdf_b,
+                _ = st.download_button("PDF", data=pdf_b,
                                    file_name=f"rel_{mes_label.replace('/', '_')}.pdf",
                                    mime="application/pdf",
                                    key=f"dl_pdf_{mes_label}")
@@ -1359,7 +1358,7 @@ def aba_base():
         st.write("Baixe a base completa para guardar o histórico e usar no próximo mês.")
         base_bytes = exportar_base()
         hoje = datetime.date.today().strftime("%Y_%m_%d")
-        st.download_button(
+        _ = st.download_button(
             "⬇️ Baixar Base Completa (.xlsx)",
             data=base_bytes,
             file_name=f"base_barbearia_heloisa_{hoje}.xlsx",
@@ -1457,7 +1456,7 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    st.success(f"Painel atualizado - versão {APP_VERSION}. Procure a aba ➕ Adicionar Dados.")
+    st.caption(f"Painel atualizado - versão {APP_VERSION}. Use a aba ➕ Adicionar Dados para importar relatórios e lançar despesas.")
 
     init_state()
 
@@ -1498,21 +1497,24 @@ def main():
             st.metric("Faturamento", formatar_brl(resumo["Faturamento"]))
             st.metric("Total Despesas", formatar_brl(resumo["Total Despesas"]))
             saldo = resumo["Saldo Livre"]
-            st.metric("Saldo Livre", formatar_brl(saldo), delta=f"{'✓' if saldo >= 0 else '✗'}")
+            st.metric("Saldo Livre", formatar_brl(saldo))
             status = resumo["Status"]
             emoji = cor_status(status)
             st.markdown(f"**Status:** {emoji} {status}")
 
         st.markdown("---")
         st.markdown("### 🔧 Ações Rápidas")
-        if st.button("🔒 Fechar Mês Atual", use_container_width=True):
+        fechado = bool(mes_ts and mes_fechado(mes_ts))
+        if st.button("🔒 Fechar Mês Atual", use_container_width=True, disabled=fechado):
             if mes_ts:
                 atualizar_historico(mes_ts)
                 st.success("Mês fechado!")
                 st.rerun()
+        if fechado:
+            st.caption("Este mês já está fixado no histórico.")
 
         base_bytes = exportar_base()
-        st.download_button(
+        _ = st.download_button(
             "⬇️ Baixar Base",
             data=base_bytes,
             file_name=f"base_barbearia_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
@@ -1522,7 +1524,7 @@ def main():
 
         if mes_ts:
             pdf_bytes = gerar_pdf(mes_ts)
-            st.download_button(
+            _ = st.download_button(
                 "📄 Baixar PDF do Mês",
                 data=pdf_bytes,
                 file_name=f"rel_{mes_sel_label.replace('/', '_')}.pdf",
