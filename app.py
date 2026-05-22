@@ -27,7 +27,7 @@ import plotly.express as px
 import streamlit as st
 from fpdf import FPDF
 
-APP_VERSION = "2026-05-22.2"
+APP_VERSION = "2026-05-22.3"
 
 # ──────────────────────────────────────────────────────────────
 # CONSTANTES
@@ -1416,6 +1416,8 @@ def main():
     .block-container { padding-top: 1rem; }
     </style>
     """, unsafe_allow_html=True)
+
+    st.success(f"Painel atualizado - versão {APP_VERSION}. Procure a aba ➕ Adicionar Dados.")
 
     init_state()
 
