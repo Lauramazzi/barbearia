@@ -27,7 +27,7 @@ import plotly.express as px
 import streamlit as st
 from fpdf import FPDF
 
-APP_VERSION = "2026-05-22.1"
+APP_VERSION = "2026-05-22.2"
 
 # ──────────────────────────────────────────────────────────────
 # CONSTANTES
@@ -913,11 +913,12 @@ def aba_dashboard(mes_ts: pd.Timestamp):
 
 
 def aba_saidas(mes_ts: pd.Timestamp):
-    st.header(f"💸 Registro de Saídas — {mes_extenso(mes_ts)}")
+    st.header(f"➕ Adicionar Dados — {mes_extenso(mes_ts)}")
+    st.caption("Use esta área para importar relatórios do AppBarber e lançar gastos, pagamentos, parcelas e reposição de estoque.")
 
     # Importar do AppBarber
-    with st.expander("📥 Importar Relatórios do AppBarber", expanded=False):
-        st.info("Faça upload dos arquivos exportados diretamente do AppBarber.")
+    with st.expander("📥 Importar Relatórios do AppBarber", expanded=True):
+        st.info("Suba os relatórios exportados do AppBarber e clique em Processar Uploads.")
         col1, col2, col3 = st.columns(3)
         with col1:
             f_rec = st.file_uploader("Total Recebimento", type=["xlsx"], key="up_rec")
@@ -945,7 +946,7 @@ def aba_saidas(mes_ts: pd.Timestamp):
             st.rerun()
 
     # Formulário de nova saída
-    with st.expander("➕ Registrar Nova Saída", expanded=True):
+    with st.expander("💸 Registrar gasto ou pagamento manual", expanded=True):
         st.subheader("Nova Saída de Caixa")
         c1, c2 = st.columns(2)
         with c1:
@@ -1490,7 +1491,7 @@ def main():
     # Abas principais
     aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
         "📊 Dashboard",
-        "💸 Saídas",
+        "➕ Adicionar Dados",
         "📈 Histórico",
         "🎯 Metas",
         "🏆 Rankings",
